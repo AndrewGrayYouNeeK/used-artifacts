@@ -9,6 +9,7 @@ import {
   verifyPassword,
 } from "@/lib/auth/password";
 import { writeAuditEvent } from "@/domains/audit/audit";
+import { linkByDevice } from "@/domains/trust/linkage";
 
 export const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
@@ -25,6 +26,8 @@ export interface IdentityDeps {
 export interface RequestContext {
   ipHash?: string | null;
   userAgent?: string | null;
+  /** Keyed hash of the long-lived device cookie, for account-linkage signals. */
+  deviceIdHash?: string | null;
 }
 
 export const EmailSchema = z
@@ -160,7 +163,7 @@ export async function login(
 
   const passwordOk = await verifyPassword(user.passwordHash, input.password);
   await deps.db.loginEvent.create({
-    data: { userId: user.id, succeeded: passwordOk, ipHash: ctx.ipHash ?? null },
+    data: { userId: user.id, succeeded: passwordOk, ipHash: ctx.ipHash ?? null, deviceIdHash: ctx.deviceIdHash ?? null },
   });
   if (!passwordOk) {
     return { ok: false, reason: "INVALID_CREDENTIALS" };
@@ -186,6 +189,7 @@ export async function login(
         userAgent: ctx.userAgent?.slice(0, 512) ?? null,
       },
     });
+    if (ctx.deviceIdHash) await linkByDevice(tx, user.id, ctx.deviceIdHash);
     await writeAuditEvent(tx, {
       actorUserId: user.id,
       actorType: "USER",

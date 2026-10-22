@@ -5,6 +5,7 @@ import {
   ensureProvenanceTemplate,
   markIdentityVerified,
   testDb,
+  testPhotos,
 } from "../../../test/helpers";
 import { PROVENANCE_TEMPLATE_V2 } from "@/domains/compliance/provenance-template";
 import { decideListingReview } from "@/domains/compliance/review";
@@ -31,6 +32,7 @@ function submission(categoryId: string, overrides: Partial<ListingSubmission> = 
     title: "Archaic side-notched point",
     description: "Chert side-notched point, about 2 inches, small tip ding.",
     askingPrice: 12_500,
+    shipping: 800,
     regionOfOrigin: "Ohio River valley",
     estimatedAge: "Early Archaic",
     materials: "Flint Ridge chert",
@@ -72,7 +74,7 @@ describe("listing submission with a sworn provenance statement", () => {
   it("queues a valid Native American listing for review with a signed, immutable statement", async () => {
     const seller = await verifiedSeller();
     const category = await createCategory(db, { isNativeAmerican: true, requiresEnhancedReview: true });
-    const result = await submitListing(deps, { userId: seller.id, submission: submission(category.id) });
+    const result = await submitListing(deps, { photos: testPhotos(), userId: seller.id, submission: submission(category.id) });
     if (!result.ok) throw new Error(JSON.stringify(result));
 
     const listing = await db.listing.findUniqueOrThrow({
@@ -105,7 +107,7 @@ describe("listing submission with a sworn provenance statement", () => {
   it("requires the extra Native American fields and the IACA acknowledgement", async () => {
     const seller = await verifiedSeller();
     const category = await createCategory(db, { isNativeAmerican: true });
-    const result = await submitListing(deps, {
+    const result = await submitListing(deps, { photos: testPhotos(),
       userId: seller.id,
       submission: submission(category.id, {
         regionOfOrigin: undefined,
@@ -124,7 +126,7 @@ describe("listing submission with a sworn provenance statement", () => {
   it("requires every attestation and a signature matching the verified legal name", async () => {
     const seller = await verifiedSeller();
     const category = await createCategory(db);
-    const result = await submitListing(deps, {
+    const result = await submitListing(deps, { photos: testPhotos(),
       userId: seller.id,
       submission: submission(category.id, {
         attestationKeys: PROVENANCE_TEMPLATE_V2.attestations.slice(1).map((a) => a.key),
@@ -139,7 +141,7 @@ describe("listing submission with a sworn provenance statement", () => {
     const seller = await verifiedSeller();
     const category = await createCategory(db);
     const before = await db.listing.count({ where: { sellerUserId: seller.id } });
-    const result = await submitListing(deps, {
+    const result = await submitListing(deps, { photos: testPhotos(),
       userId: seller.id,
       submission: submission(category.id, { description: "Rare grave goods recovered from a burial mound in 1960." }),
     });
@@ -155,7 +157,7 @@ describe("listing submission with a sworn provenance statement", () => {
   it("flags review-level wording for the reviewer instead of blocking", async () => {
     const seller = await verifiedSeller();
     const category = await createCategory(db);
-    const result = await submitListing(deps, {
+    const result = await submitListing(deps, { photos: testPhotos(),
       userId: seller.id,
       submission: submission(category.id, { title: "Ceremonial style pipe bowl replica" }),
     });
@@ -168,7 +170,7 @@ describe("listing submission with a sworn provenance statement", () => {
   it("refuses categories in verticals that aren't open yet (antiques)", async () => {
     const seller = await verifiedSeller();
     const category = await createCategory(db, { vertical: "ANTIQUE" });
-    expect(await submitListing(deps, { userId: seller.id, submission: submission(category.id) })).toEqual({
+    expect(await submitListing(deps, { photos: testPhotos(), userId: seller.id, submission: submission(category.id) })).toEqual({
       ok: false,
       reason: "CATEGORY_UNAVAILABLE",
     });
@@ -177,7 +179,7 @@ describe("listing submission with a sworn provenance statement", () => {
   it("refuses unverified sellers", async () => {
     const user = await createVerifiedUser(db);
     const category = await createCategory(db);
-    expect(await submitListing(deps, { userId: user.id, submission: submission(category.id) })).toEqual({
+    expect(await submitListing(deps, { photos: testPhotos(), userId: user.id, submission: submission(category.id) })).toEqual({
       ok: false,
       reason: "NOT_VERIFIED",
     });
@@ -189,7 +191,7 @@ describe("compliance review", () => {
     const seller = await verifiedSeller();
     const owner = await createVerifiedUser(db, { role: "OWNER" });
     const category = await createCategory(db);
-    const result = await submitListing(deps, { userId: seller.id, submission: submission(category.id) });
+    const result = await submitListing(deps, { photos: testPhotos(), userId: seller.id, submission: submission(category.id) });
     if (!result.ok) throw new Error(JSON.stringify(result));
 
     const decision = { reviewId: result.reviewId, decision: "APPROVE" as const, notes: "" };
@@ -222,7 +224,7 @@ describe("compliance review", () => {
     const seller = await verifiedSeller();
     const owner = await createVerifiedUser(db, { role: "OWNER" });
     const category = await createCategory(db);
-    const result = await submitListing(deps, { userId: seller.id, submission: submission(category.id) });
+    const result = await submitListing(deps, { photos: testPhotos(), userId: seller.id, submission: submission(category.id) });
     if (!result.ok) throw new Error(JSON.stringify(result));
     const decision = { reviewerId: owner.id, reviewId: result.reviewId, decision: "REJECT" as const };
     expect(await decideListingReview(deps, { ...decision, notes: "" })).toEqual({ ok: false, reason: "NOTES_REQUIRED" });
@@ -251,7 +253,7 @@ describe("database guards", () => {
       db.listing.create({ data: { ...base, status: "LIVE", publishedAt: new Date() } }),
     ).rejects.toThrow(/provenance statement/);
 
-    const result = await submitListing(deps, { userId: seller.id, submission: submission(category.id) });
+    const result = await submitListing(deps, { photos: testPhotos(), userId: seller.id, submission: submission(category.id) });
     if (!result.ok) throw new Error(JSON.stringify(result));
     await db.identityVerification.update({ where: { userId: seller.id }, data: { status: "REJECTED" } });
     await expect(

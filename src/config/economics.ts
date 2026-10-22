@@ -23,6 +23,8 @@ const EconomicsEnvSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
   ESCROW_AUTO_RELEASE_DAYS: z.coerce.number().int().min(0).default(3),
+  SELLER_SHIP_BY_DAYS: z.coerce.number().int().min(1).default(5),
+  CHECKOUT_HOLD_MINUTES: z.coerce.number().int().min(30).max(1440).default(60),
   AUCTION_PAYMENT_WINDOW_HOURS: z.coerce.number().int().min(1).default(48),
 });
 
@@ -33,6 +35,10 @@ export interface EconomicsConfig extends FeeRates {
   referralBasis: ReferralBasis;
   referralCapAtPlatformFee: boolean;
   escrowAutoReleaseDays: number;
+  /** Paid orders not marked shipped within this many days are cancelled and refunded. */
+  sellerShipByDays: number;
+  /** How long an unpaid checkout holds the listing (Stripe Checkout needs at least 30). */
+  checkoutHoldMinutes: number;
   auctionPaymentWindowHours: number;
 }
 
@@ -47,6 +53,8 @@ export function loadEconomicsConfig(
     referralBasis: parsed.REFERRAL_BASIS,
     referralCapAtPlatformFee: parsed.REFERRAL_CAP_AT_PLATFORM_FEE,
     escrowAutoReleaseDays: parsed.ESCROW_AUTO_RELEASE_DAYS,
+    sellerShipByDays: parsed.SELLER_SHIP_BY_DAYS,
+    checkoutHoldMinutes: parsed.CHECKOUT_HOLD_MINUTES,
     auctionPaymentWindowHours: parsed.AUCTION_PAYMENT_WINDOW_HOURS,
   };
 }

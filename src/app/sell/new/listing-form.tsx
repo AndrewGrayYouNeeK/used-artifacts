@@ -31,6 +31,29 @@ const ACQUISITION_SOURCES = [
 
 const initial: FormState = { status: "idle" };
 
+const MAX_PHOTOS = 8;
+const MAX_EDGE = 1600;
+
+/**
+ * Downscales in the browser so uploads stay small (serverless request limits).
+ * The server re-encodes and strips metadata regardless.
+ */
+async function downscale(file: File): Promise<File> {
+  if (!file.type.startsWith("image/")) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    return blob ? new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    return file;
+  }
+}
+
 const inputClass =
   "block w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:border-stone-500 focus:ring-2 focus:ring-stone-200";
 
@@ -83,6 +106,8 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
   const [askingInput, setAskingInput] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [source, setSource] = useState("");
+  const [shippingInput, setShippingInput] = useState("");
+  const [previews, setPreviews] = useState<string[]>([]);
   const errors = state.status === "error" ? state.fieldErrors : undefined;
 
   const category = categories.find((c) => c.id === categoryId);
@@ -94,9 +119,12 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
   return (
     <form
       className="space-y-8"
-      onSubmit={(e) => {
+      onSubmit={async (e) => {
         e.preventDefault();
         const data = new FormData(e.currentTarget);
+        const photos = data.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+        data.delete("photos");
+        for (const photo of await Promise.all(photos.slice(0, MAX_PHOTOS).map(downscale))) data.append("photos", photo);
         startTransition(() => action(data));
       }}
     >
@@ -163,6 +191,35 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
             <Errors errors={errors?.iacaAcknowledged} />
           </div>
         )}
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-stone-800">
+            Photos (1–{MAX_PHOTOS})<span className="text-red-700"> *</span>
+          </span>
+          <input
+            type="file"
+            name="photos"
+            accept="image/jpeg,image/png,image/webp,image/heic"
+            multiple
+            required
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []).slice(0, MAX_PHOTOS);
+              setPreviews(files.map((f) => URL.createObjectURL(f)));
+            }}
+            className="block w-full text-sm"
+          />
+          <span className="block text-xs text-stone-500">
+            Clear, well-lit photos from several angles. Location data is removed from every photo.
+          </span>
+          <Errors errors={errors?.photos} />
+        </label>
+        {previews.length > 0 && (
+          <div className="grid grid-cols-4 gap-2">
+            {previews.map((src) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={src} src={src} alt="" className="aspect-square w-full rounded-lg object-cover" />
+            ))}
+          </div>
+        )}
         {category?.requiresEnhancedReview && !nativeAmerican && (
           <p className="text-xs text-stone-500">This category gets an enhanced compliance review.</p>
         )}
@@ -198,6 +255,16 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
             <dd className="mt-1 text-xs text-emerald-800">Asking − {pct(rates.sellerFeeBps)} seller fee</dd>
           </div>
         </dl>
+        <TextInput
+          label="US shipping you charge (USD)"
+          name="shipping"
+          inputMode="decimal"
+          placeholder="0 for free shipping"
+          value={shippingInput}
+          onChange={setShippingInput}
+          hint="Paid to you in full with your payout. Leave empty for free shipping."
+          errors={errors?.shipping}
+        />
         <p className="text-xs text-stone-500">
           Buyers never pay a fee on top of the price they see. Shipping and any sales tax are shown
           separately at checkout.

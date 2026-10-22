@@ -6,10 +6,13 @@ import { z } from "zod";
 import type { FormState } from "@/app/actions/auth";
 import { decideListingReview } from "@/domains/compliance/review";
 import { StorefrontSchema, createStorefront, submitListing } from "@/domains/listings/listings";
-import { ListingSubmissionSchema } from "@/domains/listings/rules";
+import { changeAskingPrice, withdrawListing } from "@/domains/listings/manage";
+import { MAX_PHOTOS, storePhotos } from "@/domains/listings/photos";
+import { AskingPriceSchema, ListingSubmissionSchema } from "@/domains/listings/rules";
 import { requireStaff, requireUser } from "@/lib/auth/dal";
 import { requestContext } from "@/lib/auth/session";
 import { db } from "@/lib/db";
+import { storage } from "@/lib/storage/storage";
 
 const str = (formData: FormData, key: string) => String(formData.get(key) ?? "");
 
@@ -58,6 +61,7 @@ export async function submitListingAction(_prev: FormState, formData: FormData):
     title: str(formData, "title"),
     description: str(formData, "description"),
     askingPrice: str(formData, "askingPrice"),
+    shipping: str(formData, "shipping"),
     sellerConditionGrade: str(formData, "sellerConditionGrade"),
     regionOfOrigin: str(formData, "regionOfOrigin"),
     estimatedAge: str(formData, "estimatedAge"),
@@ -79,8 +83,31 @@ export async function submitListingAction(_prev: FormState, formData: FormData):
     };
   }
 
-  const result = await submitListing({ db }, { userId: user.id, submission: parsed.data }, await requestContext());
+  const files = formData.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+  if (files.length === 0) {
+    return { status: "error", message: "Add at least one photo.", fieldErrors: { photos: ["Add at least one photo."] } };
+  }
+  if (files.length > MAX_PHOTOS) {
+    return { status: "error", message: `Up to ${MAX_PHOTOS} photos.`, fieldErrors: { photos: [`Up to ${MAX_PHOTOS} photos.`] } };
+  }
+  const stored = await storePhotos(storage(), await Promise.all(files.map(async (f) => new Uint8Array(await f.arrayBuffer()))));
+  if (!stored.ok) {
+    const message =
+      stored.reason === "TOO_LARGE"
+        ? `Photo ${stored.index + 1} is larger than 5 MB.`
+        : stored.reason === "NOT_AN_IMAGE"
+          ? `Photo ${stored.index + 1} isn't a JPEG, PNG, WebP, or HEIC image.`
+          : `Up to ${MAX_PHOTOS} photos.`;
+    return { status: "error", message, fieldErrors: { photos: [message] } };
+  }
+
+  const result = await submitListing(
+    { db },
+    { userId: user.id, submission: parsed.data, photos: stored.photos },
+    await requestContext(),
+  );
   if (result.ok) redirect(`/sell?submitted=${encodeURIComponent(result.listingId)}`);
+  await Promise.all(stored.photos.map((p) => storage().delete(p.storageKey).catch(() => undefined)));
   switch (result.reason) {
     case "INVALID": {
       const fieldErrors: Record<string, string[]> = {};
@@ -96,6 +123,8 @@ export async function submitListingAction(_prev: FormState, formData: FormData):
     }
     case "NO_STOREFRONT":
       return { status: "error", message: "Create your storefront first." };
+    case "PHOTOS_REQUIRED":
+      return { status: "error", message: `Add 1 to ${MAX_PHOTOS} photos.`, fieldErrors: { photos: ["Add at least one photo."] } };
     case "CATEGORY_UNAVAILABLE":
       return { status: "error", message: "That category isn't open for listings.", fieldErrors: { categoryId: ["Choose another category."] } };
     case "NOT_VERIFIED":
@@ -139,4 +168,50 @@ export async function decideListingReviewAction(_prev: FormState, formData: Form
   }
   revalidatePath("/admin/compliance");
   return { status: "success", message: result.listingStatus === "LIVE" ? "Approved and live." : "Rejected." };
+}
+
+export async function changePriceAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const price = AskingPriceSchema.safeParse(str(formData, "askingPrice"));
+  if (!price.success) return { status: "error", message: price.error.issues[0]?.message ?? "Enter a valid price." };
+  const result = await changeAskingPrice(
+    { db },
+    { sellerUserId: user.id, listingId: str(formData, "listingId"), askingPriceCents: price.data },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "UNCHANGED":
+        return { status: "error", message: "That's already the price." };
+      case "INVALID_PRICE":
+        return { status: "error", message: "Asking price must be between $1 and $1,000,000." };
+      case "NOT_FOUND":
+      case "NOT_EDITABLE":
+        return { status: "error", message: "This listing's price can't be changed now." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled price change failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/sell");
+  return { status: "success", message: "Price updated." };
+}
+
+export async function withdrawListingAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const result = await withdrawListing({ db }, { sellerUserId: user.id, listingId: str(formData, "listingId") }, await requestContext());
+  if (!result.ok) {
+    switch (result.reason) {
+      case "NOT_FOUND":
+      case "NOT_WITHDRAWABLE":
+        return { status: "error", message: "This listing can't be withdrawn (it may have a pending or paid order)." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled withdraw failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/sell");
+  return { status: "success", message: "Listing withdrawn." };
 }

@@ -1,14 +1,18 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { connection } from "next/server";
-import { feeRates } from "@/config/economics";
+import { after, connection } from "next/server";
+import { economics, feeRates } from "@/config/economics";
 import { UserIdentity } from "@/components/user-identity";
 import { IACA_DISCLOSURE } from "@/domains/compliance/provenance-template";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
 import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
+import { ActionForm } from "@/components/action-form";
+import { buyNowAction } from "@/app/actions/orders";
+import { recordListingView } from "@/domains/listings/manage";
 import { getCurrentUser } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
+import { photoUrl } from "@/lib/storage/storage";
 
 export default function ListingPage({ params }: PageProps<"/listings/[id]">) {
   return (
@@ -35,7 +39,8 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
       where: { id },
       include: {
         category: { include: { parent: true } },
-        storefront: { select: { name: true, slug: true } },
+        storefront: { select: { name: true, slug: true, payoutsEnabled: true } },
+        photos: { orderBy: { sortOrder: "asc" } },
         provenanceStatements: {
           orderBy: { signedAt: "desc" },
           take: 1,
@@ -50,6 +55,7 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
   const isStaff = viewer?.role === "OWNER" || viewer?.role === "MODERATOR";
   if (listing.status !== "LIVE" && listing.status !== "SOLD" && !isSeller && !isStaff) notFound();
 
+  if (listing.status === "LIVE" && !isSeller) after(() => recordListingView(db, listing.id));
   const seller = await getPublicIdentity(db, listing.sellerUserId);
   const prices = listing.askingPriceCents === null ? null : priceBreakdown(listing.askingPriceCents, feeRates());
   const statement = listing.provenanceStatements[0];
@@ -61,13 +67,32 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
           Only you and staff can see this listing. Status: {listing.status.replace("_", " ").toLowerCase()}.
         </p>
       )}
+      {listing.photos.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {listing.photos.map((photo, i) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={photo.id}
+              src={photoUrl(photo.storageKey)}
+              alt={`${listing.title}, photo ${i + 1}`}
+              width={photo.width ?? undefined}
+              height={photo.height ?? undefined}
+              className={`w-full rounded-xl border border-stone-200 bg-stone-100 object-cover ${i === 0 ? "col-span-2 row-span-2 aspect-square" : "aspect-square"}`}
+            />
+          ))}
+        </div>
+      )}
       <div className="rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
         <p className="text-xs uppercase tracking-[0.2em] text-stone-500">
           {listing.category.parent?.name} › {listing.category.name}
         </p>
         <h1 className="mt-2 font-serif text-3xl font-semibold">{listing.title}</h1>
         {prices && <p className="mt-3 text-2xl font-semibold">{formatUsd(prices.buyerPriceCents)}</p>}
-        <p className="mt-1 text-xs text-stone-500">No fees added at checkout. Shipping and tax shown at checkout.</p>
+        <p className="mt-1 text-xs text-stone-500">
+          No fees added at checkout.{" "}
+          {listing.shippingCents > 0 ? `US shipping ${formatUsd(listing.shippingCents)}` : "Free US shipping"}; sales
+          tax, where it applies, is shown at checkout.
+        </p>
         <div className="mt-6 flex items-center gap-3 text-sm">
           {seller && <UserIdentity identity={seller} />}
           <span className="text-stone-400">·</span>
@@ -102,9 +127,29 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
             </>
           )}
         </dl>
-        <p className="mt-6 rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">
-          Checkout opens in the next phase of the beta.
-        </p>
+        <div className="mt-6">
+          {listing.status === "SOLD" ? (
+            <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">Sold.</p>
+          ) : listing.status !== "LIVE" ? null : isSeller ? (
+            <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">This is your listing.</p>
+          ) : !listing.storefront.payoutsEnabled ? (
+            <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">
+              The seller is finishing payout setup. Check back soon.
+            </p>
+          ) : viewer ? (
+            <ActionForm action={buyNowAction} submitLabel="Buy now">
+              <input type="hidden" name="listingId" value={listing.id} />
+              <p className="text-xs text-stone-500">
+                Your payment is held until you confirm the item arrived as described (or{" "}
+                {economics.escrowAutoReleaseDays} days after carrier-confirmed delivery). Report a problem before then and funds stay on hold.
+              </p>
+            </ActionForm>
+          ) : (
+            <Link href="/login" className="inline-block rounded-lg bg-stone-900 px-4 py-2 text-sm font-medium text-white">
+              Sign in to buy
+            </Link>
+          )}
+        </div>
       </div>
 
       {statement && (

@@ -12,7 +12,9 @@ import {
   type Attestation,
 } from "@/domains/compliance/provenance-template";
 import { screenFields, screeningTerms, type ScreeningMatch } from "@/domains/compliance/screening";
+import { raiseFraudSignal, stronglyLinkedUserIds } from "@/domains/trust/linkage";
 import { checkListingRules, type ListingSubmission, type RuleIssue } from "./rules";
+import { hammingDistance, MAX_PHOTOS, type PreparedPhoto } from "./photos";
 
 export interface ListingDeps {
   db: Db;
@@ -98,7 +100,7 @@ export async function loadScreeningTerms(db: Db) {
 
 export type SubmitListingResult =
   | { ok: true; listingId: string; reviewId: string }
-  | { ok: false; reason: GateFailure | "NO_STOREFRONT" | "CATEGORY_UNAVAILABLE" }
+  | { ok: false; reason: GateFailure | "NO_STOREFRONT" | "CATEGORY_UNAVAILABLE" | "PHOTOS_REQUIRED" }
   | { ok: false; reason: "INVALID"; issues: RuleIssue[] }
   | { ok: false; reason: "PROHIBITED"; matches: ScreeningMatch[] };
 
@@ -109,12 +111,13 @@ export type SubmitListingResult =
  */
 export async function submitListing(
   deps: ListingDeps,
-  input: { userId: string; submission: ListingSubmission },
+  input: { userId: string; submission: ListingSubmission; photos: PreparedPhoto[] },
   ctx: RequestContext = {},
 ): Promise<SubmitListingResult> {
   const config = deps.platform ?? platform;
   const now = clock(deps);
   const s = input.submission;
+  if (input.photos.length === 0 || input.photos.length > MAX_PHOTOS) return { ok: false, reason: "PHOTOS_REQUIRED" };
 
   const gate = await checkIdentityGate(deps.db, input.userId, "SELL");
   if (!gate.ok) return { ok: false, reason: gate.reason };
@@ -168,9 +171,11 @@ export async function submitListing(
     return { ok: false, reason: "PROHIBITED", matches: screening.blocked };
   }
 
+  const reusedPhotos = await findReusedPhotos(deps.db, input.userId, input.photos);
   const reason: ComplianceReviewReason =
     screening.review.length > 0 ? "KEYWORD" : category.requiresEnhancedReview ? "CATEGORY" : "BETA_FULL_REVIEW";
   const flags = {
+    reusedPhotos,
     screening: screening.review.map((m) => ({ field: m.field, pattern: m.pattern, matchedText: m.matchedText, reason: m.reason })),
     enhancedReviewCategory: category.requiresEnhancedReview,
     nativeAmerican: category.isNativeAmerican,
@@ -192,7 +197,24 @@ export async function submitListing(
         materials: s.materials ?? null,
         format: "FIXED",
         askingPriceCents: s.askingPrice,
+        shippingCents: s.shipping,
         status: "PENDING_REVIEW",
+        photos: {
+          create: input.photos.map((p, i) => ({
+            storageKey: p.storageKey,
+            pHash: p.pHash,
+            width: p.width,
+            height: p.height,
+            sortOrder: i,
+          })),
+        },
+      },
+    });
+    await tx.itemFingerprint.create({
+      data: {
+        listingId: listing.id,
+        pHashes: input.photos.map((p) => p.pHash),
+        textHash: itemTextHash(s.title, s.description),
       },
     });
 
@@ -270,6 +292,16 @@ export async function submitListing(
         coreAttestations: Object.values(CORE_ATTESTATIONS),
       },
     });
+    const otherSellers = [...new Set(reusedPhotos.filter((r) => r.sellerUserId !== input.userId).map((r) => r.sellerUserId))];
+    if (otherSellers.length > 0) {
+      await raiseFraudSignal(tx, {
+        detector: "SELF_RESALE",
+        subjectType: "Listing",
+        subjectId: listing.id,
+        score: reusedPhotos.some((r) => r.linkedSeller) ? 80 : 50,
+        evidence: { sellerUserId: input.userId, matches: reusedPhotos },
+      });
+    }
     await writeAuditEvent(tx, {
       actorType: "SYSTEM",
       action: "compliance.review_opened",
@@ -279,4 +311,52 @@ export async function submitListing(
     });
     return { ok: true, listingId: listing.id, reviewId: review.id } as const;
   });
+}
+
+export function itemTextHash(title: string, description: string): string {
+  return sha256Hex(`${title} ${description}`.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim());
+}
+
+const NEAR_DUPLICATE_BITS = 6;
+
+export type ReusedPhoto = {
+  listingId: string;
+  sellerUserId: string;
+  pHash: string;
+  distance: number;
+  /** The other listing belongs to an account strongly linked to this seller. */
+  linkedSeller: boolean;
+};
+
+/**
+ * Photos that already appear on another listing: exact hash matches anywhere,
+ * and near matches among listings by the seller or accounts linked to them.
+ * Shown to the compliance reviewer (self-reselling, stolen photos).
+ */
+export async function findReusedPhotos(db: Db, sellerUserId: string, photos: PreparedPhoto[]): Promise<ReusedPhoto[]> {
+  const linked = await stronglyLinkedUserIds(db, sellerUserId);
+  const hashes = photos.map((p) => p.pHash);
+  const candidates = await db.listingPhoto.findMany({
+    where: {
+      OR: [{ pHash: { in: hashes } }, { listing: { sellerUserId: { in: [sellerUserId, ...linked] } } }],
+      pHash: { not: null },
+    },
+    select: { pHash: true, listing: { select: { id: true, sellerUserId: true } } },
+    take: 2000,
+  });
+  const matches = new Map<string, ReusedPhoto>();
+  for (const c of candidates) {
+    const distance = Math.min(...hashes.map((h) => hammingDistance(h, c.pHash!)));
+    if (distance > NEAR_DUPLICATE_BITS) continue;
+    const prior = matches.get(c.listing.id);
+    if (prior && prior.distance <= distance) continue;
+    matches.set(c.listing.id, {
+      listingId: c.listing.id,
+      sellerUserId: c.listing.sellerUserId,
+      pHash: c.pHash!,
+      distance,
+      linkedSeller: linked.includes(c.listing.sellerUserId),
+    });
+  }
+  return [...matches.values()];
 }

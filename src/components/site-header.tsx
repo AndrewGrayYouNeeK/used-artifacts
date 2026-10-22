@@ -23,6 +23,9 @@ async function UserMenu() {
   if (!user) {
     return (
       <nav className="flex items-center gap-4 text-sm">
+        <Link href="/browse" className="text-stone-700 hover:text-stone-950">
+          Browse
+        </Link>
         <Link href="/login" className="text-stone-700 hover:text-stone-950">
           Sign in
         </Link>
@@ -37,13 +40,24 @@ async function UserMenu() {
   }
   return (
     <nav className="flex items-center gap-4 text-sm">
+      <Link href="/browse" className="text-stone-700 hover:text-stone-950">
+        Browse
+      </Link>
+      <Link href="/orders" className="text-stone-700 hover:text-stone-950">
+        Purchases
+      </Link>
       <Link href="/sell" className="text-stone-700 hover:text-stone-950">
         Sell
       </Link>
       {(user.role === "OWNER" || user.role === "MODERATOR") && (
-        <Link href="/admin/compliance" className="text-stone-700 hover:text-stone-950">
-          Compliance
-        </Link>
+        <>
+          <Link href="/admin/compliance" className="text-stone-700 hover:text-stone-950">
+            Compliance
+          </Link>
+          <Link href="/admin/orders" className="text-stone-700 hover:text-stone-950">
+            Orders
+          </Link>
+        </>
       )}
       {user.role === "OWNER" && (
         <Link href="/admin" className="text-stone-700 hover:text-stone-950">

@@ -467,3 +467,38 @@ Roadmap item 2. Auctions stay disabled (`AUCTIONS_ENABLED=false`).
 7. **Pre-1979 acquisitions:** ARPA covers removals after October 31, 1979. Should older acquisitions get different treatment or documentation (L2)?
 8. **Landowner permission documents:** the schema has `landownerPermissionDocKey`; uploads arrive with photo storage in Phase 2. Should they be mandatory for private-land finds?
 9. **Screening list:** review the BLOCK vs REVIEW split in `src/domains/compliance/prohibited-terms.ts` with counsel.
+
+## 12. Phase 2: storefronts, listings, checkout with held funds (built)
+
+Roadmap items 1 and 4. Auctions stay off.
+
+**Storefronts and payouts**
+- A storefront connects a Stripe Connect **Express** account (Stripe collects bank, KYC, and 1099-K tax details). Buyers can't purchase until `payoutsEnabled` is true; `account.updated` webhooks keep it current.
+
+**Listings**
+- 1–8 photos per listing, up to 5 MB each. The browser downscales to 1600 px; the server re-encodes to WebP (max 2000 px), strips EXIF/GPS metadata, and stores them in S3/R2 (local disk in dev).
+- Each photo gets a 64-bit difference hash (`ItemFingerprint`). A photo matching (Hamming distance ≤ 6) one used by the seller or a linked account is flagged for the reviewer; a match owned by another seller also raises a `SELF_RESALE` fraud signal.
+- Shipping is a flat seller-set US price (B7), shown separately. Sellers can change the asking price (history kept in `ListingPriceChange` for grading data) or withdraw. Editing text means withdraw and resubmit, so the signed provenance snapshot always matches what's shown.
+- `/browse` searches titles, descriptions, materials, and regions across enabled verticals only (antiques stay hidden). Listing views are counted in `ListingDailyStat`.
+
+**Checkout and held funds (separate charges and transfers)**
+- "Buy now" creates an order with a **fee snapshot** (asking, buyer fee, seller fee, buyer price, payout) and a Stripe Checkout Session for buyer price + shipping (+ tax if enabled). No fee is added at checkout. The listing is reserved for `CHECKOUT_HOLD_MINUTES`; one active order per listing is enforced by a partial unique index.
+- On payment the money is recorded in an **append-only double-entry ledger** (database triggers refuse edits and deletes): cash → buyer_held. On release: buyer_held → seller_payable (payout + shipping), platform_revenue (both fees), tax_payable. A Stripe transfer (idempotency key `order:<id>:release`, linked to the charge with `source_transaction`) then pays the seller; failures retry from the cron job.
+- **State machine** (section 3.3) is enforced twice: in code and by an `order_status_guard` trigger listing the same edges, with a test that keeps them identical.
+- **Release:** the buyer confirms receipt, or 3 days after carrier-confirmed delivery (`ESCROW_AUTO_RELEASE_DAYS`) the cron job auto-releases. Auto-release requires a delivery record (DB CHECK) and no fraud hold. Without EasyPost, staff mark delivery from the carrier's site at `/admin/orders`.
+- **Timers** (`/api/cron/escrow`, every 15 minutes): expire unpaid checkouts, refund orders not shipped within `SELLER_SHIP_BY_DAYS` (5), auto-release, retry transfers and refunds (max 10 attempts, then visible to staff).
+- **Disputes:** the buyer can report a problem until release; funds stay held. Staff (never a party to the order) resolve with notes: release, full refund, or partial refund. Chargebacks open a dispute automatically.
+- **Self-buy block:** before checkout and again after payment, the buyer is checked against the seller, storefront members, and strong links (same ID hash, device cookie, card fingerprint, shipping address). Pre-checkout hits are refused; post-payment hits put the order on a fraud hold for staff. Card fingerprints and addresses are stored only as keyed hashes.
+- A seller can cancel a paid, unshipped order (full refund). A refunded item goes back on sale, unless it was refunded through a dispute.
+
+**Owner tools:** `/admin/orders` shows ledger balances (held, owed to sellers, platform revenue, referrals, tax), open disputes, fraud holds, in-transit orders, and recent orders.
+
+**Audit events:** `storefront.payout_account_created`, `storefront.payouts_updated`, `order.created`, `order.self_buy_blocked`, `order.paid`, `order.hold_placed`, `order.hold_cleared`, `order.shipped`, `order.delivered`, `order.released`, `order.refunded` (seller cancel, missed ship-by, dispute), `order.expired`, `order.late_payment_refunded`, `order.dispute_opened`, `order.dispute_resolved`, `order.chargeback_opened`, `order.chargeback_after_release`, `payment.transfer_paid`, `payment.refund_succeeded`, `payment.unknown_checkout`, `listing.price_changed`, `listing.withdrawn`, `trust.account_linked`, `fraud.signal_created`. Failed transfers and refunds keep the last error on the row for staff.
+
+**Needs Andrew's decision or action**
+1. **Partial refunds** come out of the seller's share; the platform keeps both fees. Alternative: refund fees proportionally.
+2. **Sales tax** is off (`STRIPE_AUTOMATIC_TAX=false`) until Stripe Tax registrations exist (L10). Turning it on adds tax at checkout as a separate line.
+3. **Stripe processing fees** (about 2.9% + 30¢) come out of the platform's 20% take.
+4. **Delivery confirmation without EasyPost** is a manual staff step. Add `EASYPOST_API_KEY` and `EASYPOST_WEBHOOK_SECRET` to automate it.
+5. **Stripe Connect setup:** enable Connect (Express) on the platform account, set the branding, create the webhook endpoint (platform and connected-account events), and add `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `LINKAGE_HASH_SECRET`, and `CRON_SECRET` as secrets. Confirm with Stripe that holding funds until delivery is allowed for our account (L4); the "buyer protection hold" wording is used in the UI pending counsel.
+6. **Photo storage:** create an R2 (or S3) bucket with a public CDN domain and add the `S3_*` and `STORAGE_PUBLIC_BASE_URL` secrets.

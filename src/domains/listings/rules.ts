@@ -6,6 +6,30 @@ import { legalNamesMatch } from "@/domains/identity/legal-name";
 
 export const MIN_ASKING_CENTS = 100;
 export const MAX_ASKING_CENTS = 100_000_000;
+export const MAX_SHIPPING_CENTS = 100_000;
+
+export const AskingPriceSchema = z.string().transform((v, ctx) => {
+  const cents = parseUsdToCents(v);
+  if (cents === null) {
+    ctx.addIssue({ code: "custom", message: "Enter a price like 125 or 125.50." });
+    return z.NEVER;
+  }
+  if (cents < MIN_ASKING_CENTS || cents > MAX_ASKING_CENTS) {
+    ctx.addIssue({ code: "custom", message: "Asking price must be between $1 and $1,000,000." });
+    return z.NEVER;
+  }
+  return cents;
+});
+
+export const ShippingPriceSchema = z.string().transform((v, ctx) => {
+  if (v.trim() === "") return 0;
+  const cents = parseUsdToCents(v);
+  if (cents === null || cents > MAX_SHIPPING_CENTS) {
+    ctx.addIssue({ code: "custom", message: "Enter US shipping between $0 and $1,000 (0 for free shipping)." });
+    return z.NEVER;
+  }
+  return cents;
+});
 
 const optionalText = (max: number) =>
   z
@@ -23,20 +47,8 @@ export const ListingSubmissionSchema = z.object({
     .trim()
     .min(20, { error: "Describe the item in at least 20 characters." })
     .max(5000),
-  askingPrice: z
-    .string()
-    .transform((v, ctx) => {
-      const cents = parseUsdToCents(v);
-      if (cents === null) {
-        ctx.addIssue({ code: "custom", message: "Enter a price like 125 or 125.50." });
-        return z.NEVER;
-      }
-      if (cents < MIN_ASKING_CENTS || cents > MAX_ASKING_CENTS) {
-        ctx.addIssue({ code: "custom", message: "Asking price must be between $1 and $1,000,000." });
-        return z.NEVER;
-      }
-      return cents;
-    }),
+  askingPrice: AskingPriceSchema,
+  shipping: ShippingPriceSchema.default(0),
   sellerConditionGrade: optionalText(60),
   regionOfOrigin: optionalText(120),
   estimatedAge: optionalText(120),

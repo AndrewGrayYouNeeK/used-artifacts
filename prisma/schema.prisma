@@ -289,6 +289,8 @@ model Listing {
   format               ListingFormat
   /// What the seller asks. Buyers see askingPriceCents + buyer fee (owner decision B3).
   askingPriceCents     Int?
+  /// Flat US shipping the seller charges; shown as its own checkout line (0 = free shipping).
+  shippingCents        Int           @default(0)
   status               ListingStatus @default(DRAFT)
   publishedAt          DateTime?
   createdAt            DateTime      @default(now())
@@ -535,32 +537,43 @@ enum OrderStatus {
 }
 
 model Order {
-  id                String      @id @default(cuid())
-  listingId         String
-  buyerUserId       String
-  sellerUserId      String
-  storefrontId      String
-  source            OrderSource
+  id                  String      @id @default(cuid())
+  listingId           String
+  buyerUserId         String
+  sellerUserId        String
+  storefrontId        String
+  source              OrderSource
   /// Fee snapshot at purchase time; config changes never rewrite past orders.
-  askingPriceCents  Int
-  buyerFeeBps       Int
-  buyerFeeCents     Int
+  askingPriceCents    Int
+  buyerFeeBps         Int
+  buyerFeeCents       Int
   /// askingPriceCents + buyerFeeCents: the item price the buyer saw and paid, with no fee on top.
-  buyerPriceCents   Int
-  sellerFeeBps      Int
-  sellerFeeCents    Int
+  buyerPriceCents     Int
+  sellerFeeBps        Int
+  sellerFeeCents      Int
   /// askingPriceCents - sellerFeeCents.
-  sellerPayoutCents Int
+  sellerPayoutCents   Int
   /// buyerFeeCents + sellerFeeCents.
-  platformFeeCents  Int
-  shippingCents     Int         @default(0)
-  taxCents          Int         @default(0)
-  status            OrderStatus @default(CREATED)
-  paymentDueAt      DateTime?
-  deliveredAt       DateTime?
-  releaseEligibleAt DateTime?
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  platformFeeCents    Int
+  shippingCents       Int         @default(0)
+  taxCents            Int         @default(0)
+  status              OrderStatus @default(CREATED)
+  /// Unpaid checkouts hold the listing until this time, then expire.
+  paymentDueAt        DateTime?
+  paidAt              DateTime?
+  shippedAt           DateTime?
+  deliveredAt         DateTime?
+  releaseEligibleAt   DateTime?
+  releasedAt          DateTime?
+  /// Set by fraud checks or staff: funds stay held (no auto-release) until staff clear it.
+  releaseHold         Boolean     @default(false)
+  releaseHoldReason   String?
+  /// US-only shipping address collected at checkout (owner decision B7).
+  shippingAddress     Json?
+  /// Keyed HMAC of the normalized address, for account-linkage signals.
+  shippingAddressHash String?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 
   listing          Listing           @relation(fields: [listingId], references: [id])
   buyer            User              @relation("OrderBuyer", fields: [buyerUserId], references: [id])
@@ -578,6 +591,7 @@ model Order {
   @@index([buyerUserId])
   @@index([sellerUserId])
   @@index([status])
+  @@index([shippingAddressHash])
 }
 
 enum ShipmentStatus {
@@ -594,8 +608,15 @@ model Shipment {
   carrier        String
   trackingNumber String
   status         ShipmentStatus @default(LABEL_CREATED)
+  /// Tracking provider's id (e.g. EasyPost tracker), when one is configured.
+  trackerId      String?
+  shippedAt      DateTime       @default(now())
   deliveredAt    DateTime?
+  /// CARRIER (tracking webhook), STAFF (manual confirmation) or BUYER.
+  deliverySource String?
   order          Order          @relation(fields: [orderId], references: [id])
+
+  @@index([trackingNumber])
 }
 
 enum PaymentStatus {
@@ -607,14 +628,23 @@ enum PaymentStatus {
 }
 
 model Payment {
-  id                    String        @id @default(cuid())
-  orderId               String
-  stripePaymentIntentId String        @unique
-  stripeChargeId        String?       @unique
-  amountCents           Int
-  status                PaymentStatus
-  createdAt             DateTime      @default(now())
-  order                 Order         @relation(fields: [orderId], references: [id])
+  id                     String        @id @default(cuid())
+  orderId                String
+  /// "stripe" or "fake" (dev and tests only).
+  provider               String
+  /// Hosted checkout session; the payment intent only exists once the buyer pays.
+  checkoutSessionId      String        @unique
+  stripePaymentIntentId  String?       @unique
+  stripeChargeId         String?       @unique
+  amountCents            Int
+  status                 PaymentStatus
+  /// Keyed HMAC of the card fingerprint, for account-linkage signals.
+  paymentFingerprintHash String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  order                  Order         @relation(fields: [orderId], references: [id])
+
+  @@index([paymentFingerprintHash])
 }
 
 enum TransferStatus {
@@ -624,23 +654,40 @@ enum TransferStatus {
 }
 
 model Transfer {
-  id               String         @id @default(cuid())
-  orderId          String
-  stripeTransferId String?        @unique
-  amountCents      Int
-  status           TransferStatus @default(PENDING)
-  createdAt        DateTime       @default(now())
-  order            Order          @relation(fields: [orderId], references: [id])
+  id                   String         @id @default(cuid())
+  orderId              String
+  /// Sent to the provider so a retried transfer can never pay twice.
+  idempotencyKey       String         @unique
+  destinationAccountId String
+  stripeTransferId     String?        @unique
+  amountCents          Int
+  status               TransferStatus @default(PENDING)
+  attempts             Int            @default(0)
+  lastError            String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  order                Order          @relation(fields: [orderId], references: [id])
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
 }
 
 model Refund {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   orderId        String
-  stripeRefundId String?  @unique
+  idempotencyKey String       @unique
+  stripeRefundId String?      @unique
   amountCents    Int
   reason         String
-  createdAt      DateTime @default(now())
-  order          Order    @relation(fields: [orderId], references: [id])
+  status         RefundStatus @default(PENDING)
+  attempts       Int          @default(0)
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  order          Order        @relation(fields: [orderId], references: [id])
 }
 
 enum DisputeStatus {
@@ -656,17 +703,22 @@ enum DisputeResolution {
 }
 
 model Dispute {
-  id           String             @id @default(cuid())
-  orderId      String
-  openedById   String
-  reason       String
-  status       DisputeStatus      @default(OPEN)
-  resolution   DisputeResolution?
-  evidenceKeys String[]
-  createdAt    DateTime           @default(now())
-  resolvedAt   DateTime?
-  order        Order              @relation(fields: [orderId], references: [id])
-  openedBy     User               @relation("DisputeOpener", fields: [openedById], references: [id])
+  id              String             @id @default(cuid())
+  orderId         String
+  openedById      String
+  reason          String
+  status          DisputeStatus      @default(OPEN)
+  resolution      DisputeResolution?
+  evidenceKeys    String[]
+  /// Card chargeback reported by the payment provider rather than opened by the buyer.
+  isChargeback    Boolean            @default(false)
+  refundCents     Int?
+  resolvedById    String?
+  resolutionNotes String?
+  createdAt       DateTime           @default(now())
+  resolvedAt      DateTime?
+  order           Order              @relation(fields: [orderId], references: [id])
+  openedBy        User               @relation("DisputeOpener", fields: [openedById], references: [id])
 }
 
 enum LedgerAccountKind {
@@ -676,6 +728,8 @@ enum LedgerAccountKind {
   BUYER_HELD
   PROCESSOR_FEES
   CASH
+  /// Marketplace-facilitator sales tax collected and owed to states.
+  TAX_PAYABLE
 }
 
 model LedgerAccount {

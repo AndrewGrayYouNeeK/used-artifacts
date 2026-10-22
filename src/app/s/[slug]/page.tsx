@@ -1,11 +1,9 @@
 import { Suspense } from "react";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { feeRates } from "@/config/economics";
 import { UserIdentity } from "@/components/user-identity";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
-import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
+import { ListingCard } from "@/components/listing-card";
 import { db } from "@/lib/db";
 
 export default function StorefrontPage({ params }: PageProps<"/s/[slug]">) {
@@ -23,11 +21,16 @@ async function Storefront({ params }: { params: PageProps<"/s/[slug]">["params"]
   const { slug } = await params;
   const store = await db.storefront.findUnique({
     where: { slug },
-    include: { listings: { where: { status: "LIVE" }, orderBy: { publishedAt: "desc" } } },
+    include: {
+      listings: {
+        where: { status: "LIVE" },
+        orderBy: { publishedAt: "desc" },
+        include: { photos: { orderBy: { sortOrder: "asc" }, take: 1 } },
+      },
+    },
   });
   if (!store || store.status !== "ACTIVE") notFound();
   const owner = await getPublicIdentity(db, store.ownerUserId);
-  const rates = feeRates();
 
   return (
     <div className="space-y-6">
@@ -40,15 +43,8 @@ async function Storefront({ params }: { params: PageProps<"/s/[slug]">["params"]
       ) : (
         <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {store.listings.map((l) => (
-            <li key={l.id} className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <Link href={`/listings/${l.id}`} className="font-medium underline">
-                {l.title}
-              </Link>
-              {l.askingPriceCents !== null && (
-                <p className="mt-2 font-semibold">
-                  {formatUsd(priceBreakdown(l.askingPriceCents, rates).buyerPriceCents)}
-                </p>
-              )}
+            <li key={l.id}>
+              <ListingCard listing={l} />
             </li>
           ))}
         </ul>

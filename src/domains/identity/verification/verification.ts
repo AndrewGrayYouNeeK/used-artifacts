@@ -380,7 +380,7 @@ export type IdentityGate =
  * buying don't (owner decision B4).
  */
 export async function checkIdentityGate(
-  db: Db,
+  db: Pick<Db, "identityVerification">,
   userId: string,
   purpose: VerificationPurpose,
   config: Pick<PlatformConfig, "auctionsEnabled"> = platform,

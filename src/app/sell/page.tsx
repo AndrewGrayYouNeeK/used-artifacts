@@ -6,6 +6,15 @@ import { checkIdentityGate } from "@/domains/identity/verification/verification"
 import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
 import { requireUser } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
+import {
+  cancelOrderAction,
+  markShippedAction,
+  startPayoutOnboardingAction,
+} from "@/app/actions/orders";
+import { changePriceAction, withdrawListingAction } from "@/app/actions/listings";
+import { ActionForm, inputClass } from "@/components/action-form";
+import { OrderStatusBadge } from "@/components/order-status";
+import { CARRIERS } from "@/domains/orders/fulfillment";
 import { StorefrontForm } from "./storefront-form";
 
 export default function SellPage({ searchParams }: PageProps<"/sell">) {
@@ -30,7 +39,7 @@ const statusLabel: Record<ListingStatus, string> = {
 
 async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell">["searchParams"] }) {
   const user = await requireUser();
-  const { submitted } = await searchParams;
+  const { submitted, payouts } = await searchParams;
   const gate = await checkIdentityGate(db, user.id, "SELL");
   if (!gate.ok) {
     return (
@@ -68,6 +77,12 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
     include: { complianceReviews: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
   const rates = feeRates();
+  const sales = await db.order.findMany({
+    where: { sellerUserId: user.id, status: { notIn: ["CREATED", "EXPIRED"] } },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    include: { listing: { select: { title: true } }, shipment: true },
+  });
 
   return (
     <>
@@ -75,6 +90,11 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
         <p role="status" className="rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           Listing submitted with your signed provenance statement. During the beta every listing is
           reviewed before it goes live.
+        </p>
+      )}
+      {payouts === "1" && (
+        <p role="status" className="rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          Payouts are on. Buyers can now purchase your live listings.
         </p>
       )}
       <section className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
@@ -93,6 +113,79 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
         </Link>
       </section>
 
+      {!storefront.payoutsEnabled && (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-6">
+          <h2 className="font-serif text-lg font-semibold text-amber-950">Set up payouts</h2>
+          <p className="mt-1 text-sm text-amber-900">
+            Buyers can&apos;t purchase until payouts are on. Stripe collects your bank and tax details;
+            we never see your bank account number.
+          </p>
+          <div className="mt-4">
+            <ActionForm
+              action={startPayoutOnboardingAction}
+              submitLabel={storefront.stripeAccountId ? "Continue payout setup" : "Set up payouts with Stripe"}
+            />
+          </div>
+        </section>
+      )}
+
+      {sales.length > 0 && (
+        <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+          <h2 className="font-serif text-lg font-semibold">Sales</h2>
+          <ul className="mt-4 divide-y divide-stone-100">
+            {sales.map((o) => (
+              <li key={o.id} className="grid gap-3 py-4 md:grid-cols-[1fr_auto]">
+                <div className="text-sm">
+                  <p className="font-medium">{o.listing.title}</p>
+                  <p className="text-stone-600">
+                    You receive {formatUsd(o.sellerPayoutCents + o.shippingCents)} ({formatUsd(o.sellerPayoutCents)} +{" "}
+                    {formatUsd(o.shippingCents)} shipping) when the buyer confirms delivery.
+                  </p>
+                  {o.status === "PAID_HELD" && isShippingAddress(o.shippingAddress) && (
+                    <address className="mt-2 not-italic text-stone-700">
+                      Ship to: {o.shippingAddress.name}, {o.shippingAddress.line1}, {o.shippingAddress.city},{" "}
+                      {o.shippingAddress.state} {o.shippingAddress.postalCode}
+                    </address>
+                  )}
+                  {o.shipment && (
+                    <p className="mt-1 text-stone-500">
+                      {o.shipment.carrier} {o.shipment.trackingNumber}
+                    </p>
+                  )}
+                  {o.status === "PAID_HELD" && (
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <ActionForm action={markShippedAction} submitLabel="Mark shipped">
+                        <input type="hidden" name="orderId" value={o.id} />
+                        <div className="grid grid-cols-[6rem_1fr] gap-2">
+                          <select name="carrier" className={inputClass} defaultValue="USPS">
+                            {CARRIERS.map((c) => (
+                              <option key={c}>{c}</option>
+                            ))}
+                          </select>
+                          <input name="trackingNumber" required placeholder="Tracking number" className={inputClass} />
+                        </div>
+                      </ActionForm>
+                      <ActionForm
+                        action={cancelOrderAction}
+                        submitLabel="Can't ship: cancel and refund"
+                        variant="danger"
+                        confirm="Cancel this order and refund the buyer in full?"
+                      >
+                        <input type="hidden" name="orderId" value={o.id} />
+                        <input name="reason" placeholder="Reason (shown to the buyer)" className={inputClass} />
+                      </ActionForm>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <OrderStatusBadge status={o.status} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
         <h2 className="font-serif text-lg font-semibold">Your listings</h2>
         {listings.length === 0 ? (
@@ -105,7 +198,8 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
                 <th className="py-2 pr-4">Your asking price</th>
                 <th className="py-2 pr-4">Buyers see</th>
                 <th className="py-2 pr-4">You receive</th>
-                <th className="py-2">Status</th>
+                <th className="py-2 pr-4">Status</th>
+                <th className="py-2">Manage</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
@@ -128,6 +222,33 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
                         <span className="mt-1 block text-xs text-red-700">{review.notes}</span>
                       )}
                     </td>
+                    <td className="py-2">
+                      {(l.status === "LIVE" || l.status === "PENDING_REVIEW") && (
+                        <details className="text-xs">
+                          <summary className="cursor-pointer text-stone-600">Edit</summary>
+                          <div className="mt-2 space-y-3">
+                            <ActionForm action={changePriceAction} submitLabel="Change price" variant="secondary">
+                              <input type="hidden" name="listingId" value={l.id} />
+                              <input
+                                name="askingPrice"
+                                required
+                                inputMode="decimal"
+                                defaultValue={p ? (p.askingCents / 100).toFixed(2) : ""}
+                                className={inputClass}
+                              />
+                            </ActionForm>
+                            <ActionForm
+                              action={withdrawListingAction}
+                              submitLabel="Withdraw listing"
+                              variant="danger"
+                              confirm="Take this listing down?"
+                            >
+                              <input type="hidden" name="listingId" value={l.id} />
+                            </ActionForm>
+                          </div>
+                        </details>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -137,4 +258,10 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
       </section>
     </>
   );
+}
+
+function isShippingAddress(
+  v: unknown,
+): v is { name: string; line1: string; city: string; state: string; postalCode: string } {
+  return typeof v === "object" && v !== null && "line1" in v && "postalCode" in v;
 }
