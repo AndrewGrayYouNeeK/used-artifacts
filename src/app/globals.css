@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+:root {
+  --background: #faf7f2;
+  --foreground: #1c1917;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-fraunces);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+@keyframes proprietor-sheen {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.proprietor-sheen {
+  background-image: linear-gradient(
+    110deg,
+    #7c5a14 0%,
+    #c9a227 25%,
+    #f6e27a 45%,
+    #c9a227 65%,
+    #7c5a14 100%
+  );
+  background-size: 200% 100%;
+  animation: proprietor-sheen 6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proprietor-sheen {
+    animation: none;
+  }
+}

@@ -1,0 +1,282 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import type { FormState } from "@/app/actions/auth";
+import {
+  ACCOUNT_ACTIONS,
+  MANUAL_ENFORCEMENT_TYPES,
+  liftEnforcementAction,
+  reviewFraudSignal,
+  setUserRole,
+  takeEnforcementAction,
+  type ManualEnforcementType,
+} from "@/domains/admin/enforcement";
+import { decideAppeal, submitAppeal } from "@/domains/admin/appeals";
+import { decideFrozenEarning } from "@/domains/growth/referrals";
+import { consumeSecondFactor, twoFactorStatus } from "@/domains/identity/two-factor";
+import { serverEnv } from "@/config/env";
+import { requireOwner, requireStaff, requireUser } from "@/lib/auth/dal";
+import { verifyPassword } from "@/lib/auth/password";
+import { requestContext } from "@/lib/auth/session";
+import { db } from "@/lib/db";
+import { identityDeps } from "@/lib/identity-deps";
+
+const str = (formData: FormData, key: string) => String(formData.get(key) ?? "");
+
+/**
+ * Sensitive owner actions ask for the password again, plus a fresh
+ * authenticator code when two-factor is on (a hijacked session alone isn't enough).
+ */
+async function reauthenticated(userId: string, formData: FormData): Promise<boolean> {
+  const password = str(formData, "password");
+  const user = await db.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
+  if (!user?.passwordHash || !password || !(await verifyPassword(user.passwordHash, password))) return false;
+  if (!(await twoFactorStatus(db, userId)).enabled) return true;
+  return (await consumeSecondFactor({ db, twoFactorKey: serverEnv().TWO_FACTOR_ENCRYPTION_KEY }, userId, str(formData, "code"))) !== null;
+}
+
+const isManualType = (v: string): v is ManualEnforcementType => (MANUAL_ENFORCEMENT_TYPES as readonly string[]).includes(v);
+
+export async function enforceAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const type = str(formData, "type");
+  if (!isManualType(type)) return { status: "error", message: "Choose an action." };
+  if (ACCOUNT_ACTIONS.has(type) && !(await reauthenticated(staff.id, formData))) {
+    return { status: "error", message: "Enter your password and authenticator code to confirm a suspension or ban." };
+  }
+  const days = Number(str(formData, "days"));
+  const result = await takeEnforcementAction(
+    identityDeps(),
+    {
+      actorId: staff.id,
+      userId: str(formData, "userId"),
+      type,
+      reason: str(formData, "reason"),
+      fraudSignalId: str(formData, "fraudSignalId") || null,
+      listingId: str(formData, "listingId") || null,
+      userBadgeId: str(formData, "userBadgeId") || null,
+      suspensionDays: Number.isFinite(days) ? days : null,
+    },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "REASON_REQUIRED":
+        return { status: "error", message: "Give a reason (it's emailed to the user)." };
+      case "SELF_ACTION":
+        return { status: "error", message: "You can't take action against your own account." };
+      case "TARGET_IS_OWNER":
+        return { status: "error", message: "The owner account can't be restricted." };
+      case "OWNER_ONLY":
+        return { status: "error", message: "Only the owner can suspend or ban." };
+      case "INVALID_DURATION":
+        return { status: "error", message: "Suspensions last 1 to 365 days." };
+      case "LISTING_NOT_REMOVABLE":
+        return { status: "error", message: "That listing isn't live or pending, or isn't this user's." };
+      case "LISTING_HAS_ACTIVE_ORDER":
+        return { status: "error", message: "This listing has an order in progress. Resolve or refund the order first." };
+      case "BADGE_NOT_FOUND":
+        return { status: "error", message: "That badge isn't active on this account." };
+      case "ALREADY_RESTRICTED":
+        return { status: "error", message: "This account is already restricted." };
+      case "NOT_STAFF":
+      case "USER_NOT_FOUND":
+        return { status: "error", message: "That action isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled enforcement failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return {
+    status: "success",
+    message: `Recorded and emailed to the user${result.listingsRemoved ? `; ${result.listingsRemoved} listing(s) removed` : ""}.`,
+  };
+}
+
+export async function liftEnforcementFormAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const action = await db.enforcementAction.findUnique({ where: { id: str(formData, "enforcementId") }, select: { type: true } });
+  if (action && ACCOUNT_ACTIONS.has(action.type) && !(await reauthenticated(staff.id, formData))) {
+    return { status: "error", message: "Enter your password and authenticator code to restore an account." };
+  }
+  const result = await liftEnforcementAction(
+    identityDeps(),
+    { actorId: staff.id, enforcementId: str(formData, "enforcementId"), reason: str(formData, "reason") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "REASON_REQUIRED":
+        return { status: "error", message: "Record why it's being lifted (the appeal outcome)." };
+      case "OWNER_ONLY":
+        return { status: "error", message: "Only the owner can restore a suspended or banned account." };
+      case "NOT_LIFTABLE":
+        return { status: "error", message: "Removed listings stay removed; the seller can resubmit." };
+      case "ALREADY_LIFTED":
+        return { status: "error", message: "Already lifted." };
+      case "NOT_STAFF":
+      case "NOT_FOUND":
+        return { status: "error", message: "That action isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled lift failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: "Lifted." };
+}
+
+export async function reviewFraudSignalAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const status = str(formData, "status");
+  if (status !== "CONFIRMED" && status !== "DISMISSED") return { status: "error", message: "Choose confirm or dismiss." };
+  const result = await reviewFraudSignal(
+    { db },
+    { actorId: staff.id, signalId: str(formData, "signalId"), status, notes: str(formData, "notes") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "NOTES_REQUIRED":
+        return { status: "error", message: "Add notes on what you found." };
+      case "ALREADY_REVIEWED":
+        return { status: "error", message: "Someone already reviewed this signal." };
+      case "NOT_STAFF":
+      case "NOT_FOUND":
+        return { status: "error", message: "That signal isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled signal review failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: status === "CONFIRMED" ? "Confirmed." : "Dismissed." };
+}
+
+export async function setUserRoleAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const owner = await requireOwner();
+  const role = str(formData, "role");
+  if (role !== "USER" && role !== "MODERATOR") return { status: "error", message: "Choose a role." };
+  if (!(await reauthenticated(owner.id, formData))) {
+    return { status: "error", message: "Enter your password and authenticator code to change staff roles." };
+  }
+  const result = await setUserRole({ db }, { actorId: owner.id, userId: str(formData, "userId"), role }, await requestContext());
+  if (!result.ok) {
+    switch (result.reason) {
+      case "UNCHANGED":
+        return { status: "error", message: "That's already their role." };
+      case "TARGET_IS_OWNER":
+      case "SELF_ACTION":
+        return { status: "error", message: "The owner's role can't be changed here." };
+      case "OWNER_ONLY":
+      case "USER_NOT_FOUND":
+        return { status: "error", message: "That action isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled role failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: role === "MODERATOR" ? "Now a moderator." : "Moderator access removed." };
+}
+
+export async function decideFrozenEarningAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const decision = str(formData, "decision");
+  if (decision !== "RELEASE" && decision !== "FORFEIT") return { status: "error", message: "Choose release or forfeit." };
+  const result = await decideFrozenEarning(
+    identityDeps(),
+    { actorId: staff.id, earningId: str(formData, "earningId"), decision, reason: str(formData, "reason") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "REASON_REQUIRED":
+        return { status: "error", message: "Record what you found." };
+      case "NOT_FROZEN":
+        return { status: "error", message: "This earning was already decided." };
+      case "NOT_STAFF":
+      case "NOT_FOUND":
+        return { status: "error", message: "That earning isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled earning decision failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: decision === "RELEASE" ? "Released to the normal payout schedule." : "Forfeited and recorded." };
+}
+
+export async function submitAppealAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const result = await submitAppeal(
+    { db },
+    { userId: user.id, enforcementActionId: str(formData, "enforcementActionId"), message: str(formData, "message") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "MESSAGE_LENGTH":
+        return { status: "error", message: "Explain what happened in 20 to 4,000 characters." };
+      case "ALREADY_APPEALED":
+        return { status: "error", message: "You've already appealed this action." };
+      case "ALREADY_LIFTED":
+        return { status: "error", message: "This action was already lifted." };
+      case "NOT_FOUND":
+        return { status: "error", message: "That action isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled appeal failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/account/standing");
+  return { status: "success", message: "Appeal sent. We'll email you when it's decided." };
+}
+
+export async function decideAppealAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const decision = str(formData, "decision");
+  if (decision !== "UPHOLD" && decision !== "OVERTURN") return { status: "error", message: "Choose uphold or overturn." };
+  if (decision === "OVERTURN") {
+    const appeal = await db.appeal.findUnique({
+      where: { id: str(formData, "appealId") },
+      select: { enforcementAction: { select: { type: true } } },
+    });
+    if (appeal && ACCOUNT_ACTIONS.has(appeal.enforcementAction.type) && !(await reauthenticated(staff.id, formData))) {
+      return { status: "error", message: "Enter your password and authenticator code to restore an account." };
+    }
+  }
+  const result = await decideAppeal(
+    identityDeps(),
+    { actorId: staff.id, appealId: str(formData, "appealId"), decision, notes: str(formData, "notes") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "NOTES_REQUIRED":
+        return { status: "error", message: "Write the decision (it's emailed to the member)." };
+      case "ALREADY_DECIDED":
+        return { status: "error", message: "Someone already decided this appeal." };
+      case "SELF_ACTION":
+        return { status: "error", message: "You can't decide your own appeal." };
+      case "OWNER_ONLY":
+        return { status: "error", message: "Only the owner can restore a suspended or banned account." };
+      case "NOT_STAFF":
+      case "NOT_FOUND":
+        return { status: "error", message: "That appeal isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled appeal decision failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: decision === "OVERTURN" ? "Overturned and emailed." : "Upheld and emailed." };
+}
