@@ -9,7 +9,7 @@ Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in sec
 | # | Decision |
 |---|---|
 | B1 | **Multi-tenant** means each seller gets their own storefront under the Used Artifacts brand. White-label sub-marketplaces are out of scope. |
-| B2 | **Referral payouts are a share of the SALE PRICE**, paid from the platform's cut: 10% on a recruit's first sale, then 5% on every later sale for as long as the recruit sells (it never ends). |
+| B2 | **Referral payout: a flat 5% of the SALE PRICE on every sale by a recruit, first sale included**, for as long as the recruit sells (it never ends). It is paid out of the platform's fee and capped so a payout never exceeds the fee collected on that sale. *(Revised 2026-10-22: the earlier 10% first-sale rate was dropped.)* |
 | B3 | **One paid tier** at $20/month. It lowers the seller fee from 10% to 5%. |
 | B4 | **Buyers need ID verification only to bid or sell.** Browsing and fixed-price buying do not require it. |
 | B5 | A cosmetic **"Beta Founder" badge** is allowed for the **first 100 sellers**. It has no effect on fees or ranking and is kept separate from volume badges. |
@@ -29,8 +29,7 @@ All of these numbers are config values, not hard-coded. In Phase 0 they live in 
 | `PLATFORM_FEE_BPS_FREE` | 1000 (10%) | Seller fee on the free tier |
 | `PLATFORM_FEE_BPS_PAID` | 500 (5%) | Seller fee on the paid tier |
 | `PAID_TIER_PRICE_CENTS` | 2000 ($20/month) | Paid tier price |
-| `REFERRAL_FIRST_SALE_BPS` | 1000 (10% of sale price) | Referrer's share of the recruit's first sale |
-| `REFERRAL_ONGOING_BPS` | 500 (5% of sale price) | Referrer's share of the recruit's later sales, with no end date |
+| `REFERRAL_BPS` | 500 (5% of sale price) | Referrer's share of every sale by the recruit, first sale included, with no end date |
 | `REFERRAL_CAP_AT_PLATFORM_FEE` | `true` | If true, a referral payout can never exceed the fee the platform actually collected on that order (see 0.2) |
 | `ESCROW_AUTO_RELEASE_DAYS` | 3 | Days after carrier-confirmed delivery before funds auto-release |
 | `AUCTION_PAYMENT_WINDOW_HOURS` | 48 | Time an auction winner has to pay |
@@ -39,22 +38,21 @@ All of these numbers are config values, not hard-coded. In Phase 0 they live in 
 
 (bps = basis points; 100 bps = 1%.)
 
-### 0.2 Referral economics: for Andrew to review
+### 0.2 Referral economics
 
 With the numbers above, the platform's net take on a referred seller's sales is as follows. All figures are percentages of the sale price, before Stripe processing fees.
 
-| Seller | Sale | Platform fee | Referral payout | **Platform nets** |
+| Seller | Sales | Platform fee | Referral payout | **Platform nets** |
 |---|---|---|---|---|
-| Free tier | Recruit's first sale | 10% | 10% | **0%** |
-| Free tier | Later sales | 10% | 5% | 5% |
-| Paid tier | Recruit's first sale | 5% | 10%, capped to 5% | **0%**. Without the cap the platform would net **−5%** |
-| Paid tier | Later sales | 5% | 5% | **0%**, forever |
+| Free tier, not referred | Every sale | 10% | – | 10% |
+| Free tier, referred | Every sale, first sale included | 10% | 5% | **5%** |
+| Paid tier, not referred | Every sale | 5% | – | 5% |
+| Paid tier, referred | Every sale, first sale included | 5% | 5% | **0%**, forever |
 
-- **The platform nets 0% on every referred seller's first sale.**
-- **The platform nets 0% on all ongoing sales by a referred seller on the paid tier** (5% fee minus 5% referral). That seller's only revenue to the platform is the $20/month subscription.
-- **Stripe processing fees** (about 2.9% + 30¢ per card charge) are paid by the platform out of its fee, so a "0% net" row is actually a **loss of roughly 3% per order**. Possible fixes are to pass processing fees to the buyer or seller, or to compute referrals on the fee net of processing costs.
-- The paid-tier first sale is the one case where the referral is larger than the fee. Because payouts come "from the platform's cut", the plan caps the payout at the fee collected (`REFERRAL_CAP_AT_PLATFORM_FEE=true`). Andrew can turn the cap off if he prefers to pay the full 10% from other revenue.
-- Since ongoing referrals never end, the referral liability grows with every referred seller. The ledger tracks it in a separate `referral_payable` account so it is visible on the GM dashboard.
+- **The platform nets 0% on every sale by a referred seller on the paid tier** (5% fee minus 5% referral). The only revenue the platform gets from that seller is the $20/month subscription.
+- **Stripe processing fees** (about 2.9% + 30¢ per card charge) come out of the platform's fee. So the paid-tier referred row is actually a **loss of roughly 3% per order**, and the free-tier referred row nets about 2%. Possible fixes are to pass processing fees to the buyer or seller, or to compute referrals on the fee net of processing costs.
+- **Cap:** `REFERRAL_CAP_AT_PLATFORM_FEE=true` keeps any payout from exceeding the fee collected on that sale. With today's defaults the referral never exceeds the fee, so the cap doesn't trigger. It protects against future rate or fee changes, for example if the paid-tier fee is lowered below the referral rate.
+- Since referrals never end, the referral liability grows with every referred seller. The ledger tracks it in a separate `referral_payable` account so it is visible on the GM dashboard.
 
 ### 0.3 Supabase note
 
@@ -232,7 +230,7 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 - **MembershipTier**: `id, name (FREE|PLUS|PRO…), monthlyPriceCents, feeRateBps, featuredListingCredits, analyticsEnabled, earlyAccess`. Constraint: tiers contain **no** referral or recruiting multipliers. This is enforced by having no such column.
 - **Membership**: `userId, tierId, stripeSubscriptionId, status, currentPeriodEnd`
 - **Referral**: `id, referrerUserId, refereeUserId (unique), code, createdAt, firstSaleOrderId?`
-- **ReferralEarning**: `referralId, orderId (unique per referral), kind (FIRST_SALE|ONGOING), rateBps, basisCents (= sale price per B2), platformFeeCents, cappedAtFee (bool), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. `amountCents = basisCents × rateBps`, capped at `platformFeeCents` when `REFERRAL_CAP_AT_PLATFORM_FEE` is on. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
+- **ReferralEarning**: `referralId, orderId (unique per referral), kind (FIRST_SALE|ONGOING; a reporting label only, since both use the same rate), rateBps, basisCents (= sale price per B2), platformFeeCents, cappedAtFee (bool), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. `amountCents = basisCents × rateBps`, capped at `platformFeeCents` when `REFERRAL_CAP_AT_PLATFORM_FEE` is on. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
 - **Badge**: `id, code, name, criteria (json: e.g. {completedSalesCount ≥ 10} or {gmvCents ≥ X})`
 - **Badge** gains `kind (VOLUME|COSMETIC)`. VOLUME badges are computed from sales. COSMETIC covers "Beta Founder", which goes to the first 100 sellers and is capped by `BETA_FOUNDER_LIMIT=100`.
 - **UserBadge**: `userId, badgeId, awardedAt, revokedAt?, basisSnapshot`. Volume badges are recomputed only from released orders that the fraud checks did not flag.
@@ -404,7 +402,7 @@ The brand is built on accuracy, not on having a lab on day one.
 **Business and product.** Answered on 2026-10-22; see section 0. The original questions are kept here for the record.
 
 - **B1.** Confirm the meaning of "multi-tenant": multi-vendor storefronts (proposed) or white-label sub-marketplaces?
-- **B2. Referral math.** Is it "10% / 5% **of the platform fee**" (proposed: the referrer earns 10% of the 10% fee on the first sale, i.e. 1% of the sale, then 5% of the fee) or "10% / 5% **of the sale price**" (which would consume the platform's entire fee on the first sale)? Does "ongoing" last forever or have a cap (for example 12 months)? When a paid tier lowers the fee, is the referral computed on the reduced fee? (Proposed: yes, on the fee actually collected.)
+- **B2. Referral math.** *(Answered: a flat 5% of the sale price on every sale, capped at the fee. See section 0.)* Is it "10% / 5% **of the platform fee**" (proposed: the referrer earns 10% of the 10% fee on the first sale, i.e. 1% of the sale, then 5% of the fee) or "10% / 5% **of the sale price**" (which would consume the platform's entire fee on the first sale)? Does "ongoing" last forever or have a cap (for example 12 months)? When a paid tier lowers the fee, is the referral computed on the reduced fee? (Proposed: yes, on the fee actually collected.)
 - **B3.** Platform fee is 10% for the free tier. What fee rate and price should each paid tier have?
 - **B4.** Must buyers be ID-verified to purchase at fixed price, or only to bid and sell?
 - **B5.** The README mentions a "founders badge program". Is a non-volume "Founder/Beta" badge allowed, given roadmap item 7 (badges for real volume only)? Proposed: a cosmetic "Beta Founder" label kept separate from volume badges, with no fee or ranking effect.

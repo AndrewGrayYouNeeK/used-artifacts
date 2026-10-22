@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { UserIdentity } from "@/components/user-identity";
-import { economics, splitSale, type ReferralKind, type SellerTier } from "@/config/economics";
+import { economics, splitSale, type SellerTier } from "@/config/economics";
 import { platform } from "@/config/platform";
 import { verifyAuditChain } from "@/domains/audit/audit";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
@@ -123,12 +123,11 @@ const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}%`;
 
 function EconomicsPanel() {
   const sample = 10_000;
-  const rows: { label: string; tier: SellerTier; kind: ReferralKind | null }[] = [
-    { label: "Free seller, not referred", tier: "FREE", kind: null },
-    { label: "Free seller, referred: first sale", tier: "FREE", kind: "FIRST_SALE" },
-    { label: "Free seller, referred: later sales", tier: "FREE", kind: "ONGOING" },
-    { label: "Paid seller, referred: first sale", tier: "PAID", kind: "FIRST_SALE" },
-    { label: "Paid seller, referred: later sales", tier: "PAID", kind: "ONGOING" },
+  const rows: { label: string; tier: SellerTier; referred: boolean }[] = [
+    { label: "Free seller, not referred", tier: "FREE", referred: false },
+    { label: "Free seller, referred (every sale, incl. first)", tier: "FREE", referred: true },
+    { label: "Paid seller, not referred", tier: "PAID", referred: false },
+    { label: "Paid seller, referred (every sale, incl. first)", tier: "PAID", referred: true },
   ];
 
   return (
@@ -136,8 +135,8 @@ function EconomicsPanel() {
       <h2 className="font-serif text-lg font-semibold">Economics (config values)</h2>
       <p className="mt-1 text-sm text-stone-500">
         Free fee {pct(economics.platformFeeBps.FREE)} · Paid fee {pct(economics.platformFeeBps.PAID)} at $
-        {(economics.paidTierPriceCents / 100).toFixed(2)}/mo · Referral {pct(economics.referralFirstSaleBps)} first
-        sale, {pct(economics.referralOngoingBps)} ongoing (of sale price) · Cap at fee:{" "}
+        {(economics.paidTierPriceCents / 100).toFixed(2)}/mo · Referral {pct(economics.referralBps)} of
+        sale price on every recruit sale · Cap at fee:{" "}
         {economics.referralCapAtPlatformFee ? "on" : "off"} · Verticals: {platform.enabledVerticals.join(", ")}
       </p>
       <table className="mt-4 w-full text-left text-sm">
@@ -151,7 +150,7 @@ function EconomicsPanel() {
         </thead>
         <tbody className="divide-y divide-stone-100">
           {rows.map((r) => {
-            const s = splitSale({ saleCents: sample, sellerTier: r.tier, referralKind: r.kind });
+            const s = splitSale({ saleCents: sample, sellerTier: r.tier, referred: r.referred });
             return (
               <tr key={r.label}>
                 <td className="py-2 pr-4">{r.label}</td>
