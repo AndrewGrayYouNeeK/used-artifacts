@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { economics } from "@/config/economics";
 import { createDb } from "@/lib/db";
 import type { Vertical } from "@/generated/prisma/enums";
 
@@ -167,33 +166,6 @@ async function main() {
   for (const badge of BADGES) {
     await db.badge.upsert({ where: { code: badge.code }, update: {}, create: badge });
   }
-
-  await db.membershipTier.upsert({
-    where: { code: "FREE" },
-    update: { feeRateBps: economics.platformFeeBps.FREE },
-    create: {
-      code: "FREE",
-      name: "Free",
-      monthlyPriceCents: 0,
-      feeRateBps: economics.platformFeeBps.FREE,
-    },
-  });
-  await db.membershipTier.upsert({
-    where: { code: "PAID" },
-    update: {
-      feeRateBps: economics.platformFeeBps.PAID,
-      monthlyPriceCents: economics.paidTierPriceCents,
-    },
-    create: {
-      code: "PAID",
-      name: "Plus",
-      monthlyPriceCents: economics.paidTierPriceCents,
-      feeRateBps: economics.platformFeeBps.PAID,
-      featuredListingCredits: 3,
-      analyticsEnabled: true,
-      earlyAccess: true,
-    },
-  });
 
   for (const term of PROHIBITED_TERMS) {
     await db.prohibitedTerm.upsert({

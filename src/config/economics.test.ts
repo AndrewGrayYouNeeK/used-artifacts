@@ -1,82 +1,97 @@
 import { describe, expect, it } from "vitest";
-import { loadEconomicsConfig, platformFeeCents, referralPayout, splitSale } from "./economics";
+import { loadEconomicsConfig, splitSale } from "./economics";
 
 const defaults = loadEconomicsConfig({});
-const SALE = 10_000;
+const ASKING = 10_000;
 
 describe("economics config", () => {
   it("defaults to Andrew's decisions", () => {
-    expect(defaults.platformFeeBps).toEqual({ FREE: 1000, PAID: 500 });
-    expect(defaults.paidTierPriceCents).toBe(2000);
-    expect(defaults.referralBps).toBe(500);
-    expect(defaults.referralCapAtPlatformFee).toBe(true);
-    expect(defaults.escrowAutoReleaseDays).toBe(3);
-    expect(defaults.auctionPaymentWindowHours).toBe(48);
+    expect(defaults).toMatchObject({
+      buyerFeeBps: 1000,
+      sellerFeeBps: 1000,
+      referralBps: 500,
+      referralBasis: "BUYER_PRICE",
+      referralCapAtPlatformFee: true,
+      escrowAutoReleaseDays: 3,
+      auctionPaymentWindowHours: 48,
+    });
+  });
+
+  it("has no paid-tier settings", () => {
+    expect(Object.keys(defaults).some((k) => /tier|paid|subscription/i.test(k))).toBe(false);
   });
 
   it("reads overrides from env", () => {
     const cfg = loadEconomicsConfig({
-      PLATFORM_FEE_BPS_FREE: "800",
+      BUYER_FEE_BPS: "800",
+      SELLER_FEE_BPS: "700",
       REFERRAL_BPS: "300",
+      REFERRAL_BASIS: "ASKING_PRICE",
       REFERRAL_CAP_AT_PLATFORM_FEE: "false",
     });
-    expect(cfg.platformFeeBps.FREE).toBe(800);
-    expect(cfg.referralBps).toBe(300);
-    expect(cfg.referralCapAtPlatformFee).toBe(false);
+    expect(cfg).toMatchObject({
+      buyerFeeBps: 800,
+      sellerFeeBps: 700,
+      referralBps: 300,
+      referralBasis: "ASKING_PRICE",
+      referralCapAtPlatformFee: false,
+    });
   });
 
-  it("rejects out-of-range rates", () => {
-    expect(() => loadEconomicsConfig({ PLATFORM_FEE_BPS_FREE: "20000" })).toThrow();
+  it("rejects invalid values", () => {
+    expect(() => loadEconomicsConfig({ BUYER_FEE_BPS: "20000" })).toThrow();
     expect(() => loadEconomicsConfig({ REFERRAL_BPS: "-1" })).toThrow();
+    expect(() => loadEconomicsConfig({ REFERRAL_BASIS: "PROFIT" })).toThrow();
   });
 });
 
-describe("platform fee", () => {
-  it("is 10% for free sellers and 5% for paid sellers", () => {
-    expect(platformFeeCents(SALE, "FREE", defaults)).toBe(1000);
-    expect(platformFeeCents(SALE, "PAID", defaults)).toBe(500);
+describe("two-sided 10% fees (BUILD_PLAN 0.2)", () => {
+  it("$100 asking: buyer sees and pays $110, seller gets $90, platform takes $20", () => {
+    const s = splitSale({ askingCents: ASKING, referred: false }, defaults);
+    expect(s).toMatchObject({
+      askingCents: 10_000,
+      buyerFeeCents: 1000,
+      buyerPriceCents: 11_000,
+      sellerFeeCents: 1000,
+      sellerPayoutCents: 9000,
+      platformFeeCents: 2000,
+      referral: null,
+      platformNetCents: 2000,
+    });
   });
 
-  it("rejects non-integer cents", () => {
-    expect(() => platformFeeCents(10.5, "FREE", defaults)).toThrow(RangeError);
+  it("money balances: buyer price = seller payout + platform fee", () => {
+    for (const asking of [1, 99, 1234, 99_999]) {
+      const s = splitSale({ askingCents: asking, referred: false }, defaults);
+      expect(s.buyerPriceCents).toBe(s.sellerPayoutCents + s.platformFeeCents);
+    }
   });
 });
 
-describe("referral: flat 5% of the sale price on every recruit sale (BUILD_PLAN 0.2)", () => {
-  it("free-tier recruit: referrer gets 5%, platform nets 5% on every sale including the first", () => {
-    const s = splitSale({ saleCents: SALE, sellerTier: "FREE", referred: true }, defaults);
-    expect(s.referral).toMatchObject({ rateBps: 500, basisCents: SALE, amountCents: 500, cappedAtFee: false });
-    expect(s.platformNetCents).toBe(500);
+describe("referral: flat 5% of the sale on every recruit sale, paid from the platform's take", () => {
+  it("default basis is the buyer price: $5.50 on a $110 sale, platform nets $14.50", () => {
+    const s = splitSale({ askingCents: ASKING, referred: true }, defaults);
+    expect(s.referral).toMatchObject({ basis: "BUYER_PRICE", basisCents: 11_000, amountCents: 550, cappedAtFee: false });
+    expect(s.platformNetCents).toBe(1450);
+    expect(s.sellerPayoutCents).toBe(9000);
   });
 
-  it("paid-tier recruit: referral equals the 5% fee, platform nets 0% on every sale", () => {
-    const s = splitSale({ saleCents: SALE, sellerTier: "PAID", referred: true }, defaults);
+  it("asking-price basis: $5.00, platform nets $15.00", () => {
+    const cfg = loadEconomicsConfig({ REFERRAL_BASIS: "ASKING_PRICE" });
+    const s = splitSale({ askingCents: ASKING, referred: true }, cfg);
     expect(s.referral?.amountCents).toBe(500);
-    expect(s.referral?.cappedAtFee).toBe(false);
+    expect(s.platformNetCents).toBe(1500);
+  });
+
+  it("the cap stops a payout from exceeding the platform's take on that sale", () => {
+    const cfg = loadEconomicsConfig({ REFERRAL_BPS: "2500" });
+    const s = splitSale({ askingCents: ASKING, referred: true }, cfg);
+    expect(s.referral).toMatchObject({ amountCents: 2000, cappedAtFee: true });
     expect(s.platformNetCents).toBe(0);
   });
 
-  it("not referred: platform keeps the whole fee", () => {
-    expect(splitSale({ saleCents: SALE, sellerTier: "FREE", referred: false }, defaults).platformNetCents).toBe(1000);
-  });
-
-  it("the cap stops a payout from exceeding the fee collected on that sale", () => {
-    const cfg = loadEconomicsConfig({ REFERRAL_BPS: "800" });
-    const s = splitSale({ saleCents: SALE, sellerTier: "PAID", referred: true }, cfg);
-    expect(s.referral).toMatchObject({ amountCents: 500, cappedAtFee: true });
-    expect(s.platformNetCents).toBe(0);
-  });
-
-  it("with the cap off, a referral larger than the fee would cost the platform money", () => {
-    const cfg = loadEconomicsConfig({ REFERRAL_BPS: "800", REFERRAL_CAP_AT_PLATFORM_FEE: "false" });
-    expect(splitSale({ saleCents: SALE, sellerTier: "PAID", referred: true }, cfg).platformNetCents).toBe(-300);
-  });
-
-  it("seller proceeds never include the referral", () => {
-    expect(splitSale({ saleCents: SALE, sellerTier: "FREE", referred: true }, defaults).sellerProceedsCents).toBe(9000);
-  });
-
-  it("rounds to whole cents", () => {
-    expect(referralPayout({ saleCents: 1999, platformFeeCents: 200 }, defaults).amountCents).toBe(100);
+  it("with the cap off, an oversized referral would cost the platform money", () => {
+    const cfg = loadEconomicsConfig({ REFERRAL_BPS: "2500", REFERRAL_CAP_AT_PLATFORM_FEE: "false" });
+    expect(splitSale({ askingCents: ASKING, referred: true }, cfg).platformNetCents).toBe(-750);
   });
 });

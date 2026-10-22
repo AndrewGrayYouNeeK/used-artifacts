@@ -9,8 +9,8 @@ Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in sec
 | # | Decision |
 |---|---|
 | B1 | **Multi-tenant** means each seller gets their own storefront under the Used Artifacts brand. White-label sub-marketplaces are out of scope. |
-| B2 | **Referral payout: a flat 5% of the SALE PRICE on every sale by a recruit, first sale included**, for as long as the recruit sells (it never ends). It is paid out of the platform's fee and capped so a payout never exceeds the fee collected on that sale. *(Revised 2026-10-22: the earlier 10% first-sale rate was dropped.)* |
-| B3 | **One paid tier** at $20/month. It lowers the seller fee from 10% to 5%. |
+| B2 | **Referral payout: a flat 5% of the SALE PRICE on every sale by a recruit, first sale included**, for as long as the recruit sells (it never ends). It is paid out of the platform's take and capped so a payout never exceeds the fees collected on that sale. *(Revised 2026-10-22: the earlier 10% first-sale rate was dropped.)* Which amount "the sale" means under the two-sided fees is open; see 0.2. |
+| B3 | **Two-sided 10% fees, no paid tier (final, 2026-10-22).** Membership is free for everyone. The seller sets an **asking price**. The **buyer price shown online is asking + 10%**, and checkout never adds a fee on top of the shown price. The **seller payout is asking − 10%**. The platform keeps both fees, about 20% of asking. *(Replaces the earlier $20/month paid tier, which is removed entirely.)* |
 | B4 | **Buyers need ID verification only to bid or sell.** Browsing and fixed-price buying do not require it. |
 | B5 | A cosmetic **"Beta Founder" badge** is allowed for the **first 100 sellers**. It has no effect on fees or ranking and is kept separate from volume badges. |
 | B10 | A unique **"Proprietor" badge** for Andrew, the platform owner. It has premium, top-tier styling and is distinct from Beta Founder. It cannot be earned or bought, and code and the database enforce that **exactly one user can ever hold it**. It is shown on his owner dashboard profile and everywhere he appears (storefront, listings, bids, comments). See section 4.6a. |
@@ -18,7 +18,7 @@ Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in sec
 | B9 | **Grading is staged (roadmap item 11, revised).** Grading Stage 1 runs during the beta: 1–2 private partner authenticators for high-value pieces, results shown as listing badges, and sales-outcome data collected. Grading Stage 2 starts once patterns emerge: in-house rubrics, with partner verification before any grade goes public. See section 6.2. *The brand comes from accuracy, not from having a lab on day one.* |
 | B7 | **US-only shipping** at launch. |
 | B8 | **3-day hold after delivery** before auto-release. **48-hour payment window** for auction winners. |
-| — | Unchanged: auctions stay off until the Kentucky licensing question (L1) is answered, and paid tiers launch after the beta. The full in-house grading program and the MUSEUM_GRADE tier still come last. |
+| — | Unchanged: auctions stay off until the Kentucky licensing question (L1) is answered, The full in-house grading program and the MUSEUM_GRADE tier still come last. |
 
 ### 0.1 Configuration values
 
@@ -26,11 +26,11 @@ All of these numbers are config values, not hard-coded. In Phase 0 they live in 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `PLATFORM_FEE_BPS_FREE` | 1000 (10%) | Seller fee on the free tier |
-| `PLATFORM_FEE_BPS_PAID` | 500 (5%) | Seller fee on the paid tier |
-| `PAID_TIER_PRICE_CENTS` | 2000 ($20/month) | Paid tier price |
-| `REFERRAL_BPS` | 500 (5% of sale price) | Referrer's share of every sale by the recruit, first sale included, with no end date |
-| `REFERRAL_CAP_AT_PLATFORM_FEE` | `true` | If true, a referral payout can never exceed the fee the platform actually collected on that order (see 0.2) |
+| `BUYER_FEE_BPS` | 1000 (10%) | Buyer fee, built into the shown price: buyer price = asking + this |
+| `SELLER_FEE_BPS` | 1000 (10%) | Seller fee, deducted from the asking price: payout = asking − this |
+| `REFERRAL_BPS` | 500 (5% of the sale) | Referrer's share of every sale by the recruit, first sale included, with no end date |
+| `REFERRAL_BASIS` | `BUYER_PRICE`, pending Andrew | Which amount the referral percentage applies to: `BUYER_PRICE` (what the buyer paid) or `ASKING_PRICE` |
+| `REFERRAL_CAP_AT_PLATFORM_FEE` | `true` | If true, a referral payout can never exceed the fees the platform actually collected on that order (see 0.2) |
 | `ESCROW_AUTO_RELEASE_DAYS` | 3 | Days after carrier-confirmed delivery before funds auto-release |
 | `AUCTION_PAYMENT_WINDOW_HOURS` | 48 | Time an auction winner has to pay |
 | `ENABLED_VERTICALS` | `ARTIFACT` | Comma-separated list of verticals open for listing and browsing. Add `ANTIQUE` once grading exists. |
@@ -38,20 +38,22 @@ All of these numbers are config values, not hard-coded. In Phase 0 they live in 
 
 (bps = basis points; 100 bps = 1%.)
 
-### 0.2 Referral economics
+### 0.2 Fee and referral economics
 
-With the numbers above, the platform's net take on a referred seller's sales is as follows. All figures are percentages of the sale price, before Stripe processing fees.
+Fees are computed in integer cents with half-up rounding per fee (`src/domains/pricing/pricing.ts`). The same pure function drives the listing form preview, checkout, and the order snapshot, so the seller sees exactly what will happen. Each order stores its own asking price, both fee rates and amounts, the buyer price, and the payout, and database CHECK constraints enforce `buyerPrice = asking + buyerFee`, `payout = asking − sellerFee`, and `platformFee = buyerFee + sellerFee`.
 
-| Seller | Sales | Platform fee | Referral payout | **Platform nets** |
-|---|---|---|---|---|
-| Free tier, not referred | Every sale | 10% | – | 10% |
-| Free tier, referred | Every sale, first sale included | 10% | 5% | **5%** |
-| Paid tier, not referred | Every sale | 5% | – | 5% |
-| Paid tier, referred | Every sale, first sale included | 5% | 5% | **0%**, forever |
+On a **$100 asking price**, before Stripe processing fees:
 
-- **The platform nets 0% on every sale by a referred seller on the paid tier** (5% fee minus 5% referral). The only revenue the platform gets from that seller is the $20/month subscription.
-- **Stripe processing fees** (about 2.9% + 30¢ per card charge) come out of the platform's fee. So the paid-tier referred row is actually a **loss of roughly 3% per order**, and the free-tier referred row nets about 2%. Possible fixes are to pass processing fees to the buyer or seller, or to compute referrals on the fee net of processing costs.
-- **Cap:** `REFERRAL_CAP_AT_PLATFORM_FEE=true` keeps any payout from exceeding the fee collected on that sale. With today's defaults the referral never exceeds the fee, so the cap doesn't trigger. It protects against future rate or fee changes, for example if the paid-tier fee is lowered below the referral rate.
+| Seller | Buyer pays | Seller receives | Platform take | Referral (5%) | **Platform nets** |
+|---|---|---|---|---|---|
+| Not referred | $110.00 | $90.00 | $20.00 | – | **$20.00** |
+| Referred, `REFERRAL_BASIS=BUYER_PRICE` (default) | $110.00 | $90.00 | $20.00 | $5.50 | **$14.50** |
+| Referred, `REFERRAL_BASIS=ASKING_PRICE` | $110.00 | $90.00 | $20.00 | $5.00 | **$15.00** |
+
+- **Open question for Andrew: what is "the sale" for the 5% referral?** The default is the buyer price ($110, so $5.50), since that is what was actually sold for. The alternative is the asking price ($100, so $5.00). It is one config value.
+- **Stripe processing fees** (about 2.9% + 30¢ per card charge, on the $110 charged) come to about $3.49 here. Unless they are passed on, they come out of the platform take: roughly $16.51 net when not referred and $11.01 when referred (buyer-price basis).
+- **Shipping and sales tax** are separate lines at checkout (marketplace-facilitator tax is required by law in most states). "No fee on top of the shown price" holds for platform fees; Andrew should confirm that showing shipping and tax separately is acceptable.
+- **Cap:** `REFERRAL_CAP_AT_PLATFORM_FEE=true` keeps any payout from exceeding the fees collected on that sale. With today's defaults the referral is about a quarter of the take, so the cap only matters if rates change.
 - Since referrals never end, the referral liability grows with every referred seller. The ledger tracks it in a separate `referral_payable` account so it is visible on the GM dashboard.
 
 ### 0.3 Supabase note
@@ -91,7 +93,7 @@ Repo state when this was written: one commit with only `README.md` ("marketplace
 | AI vision | **Provider-agnostic adapter** over OpenAI / Anthropic / Google vision models | Roadmap item 8 says to use existing APIs. The adapter lets us swap providers and A/B test them. Output must be structured JSON validated with Zod. |
 | Email | **Postmark** (or Resend) | Transactional email is critical here: verification and password-reset links. Postmark has a strong deliverability record. |
 | Hosting | **Vercel** for the Next.js app, plus **Render/Fly.io** for the worker process | Vercel is fine for request/response work. Auction timers need an always-on worker. |
-| Observability | **Sentry** (errors), **PostHog** (product analytics and feature flags), structured logs | PostHog flags gate auctions, paid tiers, and the grading module. |
+| Observability | **Sentry** (errors), **PostHog** (product analytics and feature flags), structured logs | PostHog flags gate auctions and the grading module. |
 | Testing | **Vitest** (unit), **Playwright** (end to end), Stripe test mode plus `stripe-cli` webhook forwarding | |
 | CI | GitHub Actions: typecheck, lint, test, `prisma migrate diff` check | |
 
@@ -130,7 +132,7 @@ Repo state when this was written: one commit with only `README.md` ("marketplace
 - `orders`: checkout, the order state machine, shipping and tracking, delivery confirmation, disputes.
 - `payments`: Stripe Connect onboarding, charges, holds, transfers, refunds, and an internal double-entry **ledger**.
 - `trust`: fraud signals, the account-linkage graph, shill and circle-trade detectors, enforcement actions and penalties.
-- `growth`: membership tiers, referrals, badges.
+- `growth`: referrals, badges.
 - `ai`: the vision adapter, the analysis pipeline, the guardrail post-processor.
 - `grading`: authenticators, rubrics, submissions, results, certificates (roadmap item 11; the schema ships now, the UI ships later).
 - `admin`: the GM dashboard, moderation queues, the audit log viewer.
@@ -152,7 +154,7 @@ CREATED ─pay─▶ PAID_HELD ─ship─▶ SHIPPED ─carrier delivered─▶ 
  EXPIRED ─▶ (auction: offer to next bidder or relist)
 ```
 
-- The charge goes to the platform. The seller's share is a **Transfer** created on release, using `source_transaction` to link it to the charge. The platform fee is retained; the referral share is carved out of it (roadmap item 6).
+- The charge goes to the platform. The seller's share is a **Transfer** created on release, using `source_transaction` to link it to the charge. The charge is the buyer price (asking + buyer fee) plus shipping and tax; the transfer is the seller payout (asking − seller fee) plus shipping. The platform retains both fees; the referral share is carved out of them (roadmap item 6).
 - Auto-release after X days requires carrier-confirmed delivery. Proposed default: 3 days after delivery, configurable by the owner.
 - Every transition writes ledger entries and an audit event. Transitions happen only in `orders/stateMachine.ts`, which rejects illegal edges.
 
@@ -195,7 +197,7 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 ### 4.2 Catalog and compliance
 
 - **Category**: `id, parentId, name, slug, vertical (ARTIFACT|ANTIQUE), isNativeAmerican (bool), requiresEnhancedReview (bool), rubricId?`. Listings and browse are filtered to `ENABLED_VERTICALS`.
-- **Listing**: `id, storefrontId, sellerUserId, categoryId, title, description, condition, format (FIXED|AUCTION), priceCents?, status (DRAFT|PENDING_REVIEW|LIVE|SOLD|REMOVED), featuredUntil?, publishedAt`
+- **Listing**: `id, storefrontId, sellerUserId, categoryId, title, description, condition, format (FIXED|AUCTION), askingPriceCents?, status (DRAFT|PENDING_REVIEW|LIVE|SOLD|REMOVED), publishedAt`. Buyers only ever see `askingPriceCents + buyer fee`.
 - **ListingPhoto**: `listingId, storageKey, pHash, width, height, order`
 - **ProvenanceStatement**: `id, listingId, sellerUserId, statementVersion, acquisitionSource (enum: PRIVATE_LAND_WITH_PERMISSION|INHERITED|PURCHASED|OTHER), acquisitionState, acquisitionYearApprox, landownerPermissionDocKey?, priorOwnerChain (json), attestsNotFederalOrStateOrTribalLand (bool), attestsNotHumanRemainsFuneralSacredPatrimony (bool), attestsNotIndianMadeMisrepresented (bool), signedName, signedAt, ip, userAgent, signatureHash`. The statement is **immutable** once signed; edits create a new version.
 - **ProvenanceStatementTemplate**: versioned legal text. Counsel must approve the text before launch.
@@ -211,7 +213,7 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 
 ### 4.4 Orders, payments, ledger
 
-- **Order**: `id, listingId, buyerUserId, sellerUserId, storefrontId, source (FIXED|AUCTION|SECOND_CHANCE), subtotalCents, shippingCents, taxCents, platformFeeCents, feeRateBps, status (state machine above), paymentDueAt, deliveredAt, releaseEligibleAt`
+- **Order**: `id, listingId, buyerUserId, sellerUserId, storefrontId, source (FIXED|AUCTION|SECOND_CHANCE), askingPriceCents, buyerFeeBps, buyerFeeCents, buyerPriceCents, sellerFeeBps, sellerFeeCents, sellerPayoutCents, platformFeeCents, shippingCents, taxCents, status (state machine above), paymentDueAt, deliveredAt, releaseEligibleAt`
 - **Shipment**: `orderId, carrier, trackingNumber, status, deliveredAt (from carrier webhook)`
 - **Payment**: `orderId, stripePaymentIntentId, stripeChargeId, amountCents, status`
 - **Transfer**: `orderId, stripeTransferId, amountCents, status`
@@ -225,12 +227,11 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 - **EnforcementAction**: `userId, type (WARNING|BID_VOID|LISTING_REMOVED|FEE_FORFEIT|BADGE_REVOKED|SUSPENSION|BAN), reason, fraudSignalId?, actorId, expiresAt?`
 - **ItemFingerprint**: `listingId, pHashes[], textHash`. Used to recognize the same item being re-listed.
 
-### 4.6 Growth: membership, referrals, badges
+### 4.6 Growth: referrals, badges
 
-- **MembershipTier**: `id, name (FREE|PLUS|PRO…), monthlyPriceCents, feeRateBps, featuredListingCredits, analyticsEnabled, earlyAccess`. Constraint: tiers contain **no** referral or recruiting multipliers. This is enforced by having no such column.
-- **Membership**: `userId, tierId, stripeSubscriptionId, status, currentPeriodEnd`
+- Membership is free for everyone and there is no paid tier (B3), so there are no membership or subscription tables.
 - **Referral**: `id, referrerUserId, refereeUserId (unique), code, createdAt, firstSaleOrderId?`
-- **ReferralEarning**: `referralId, orderId (unique per referral), kind (FIRST_SALE|ONGOING; a reporting label only, since both use the same rate), rateBps, basisCents (= sale price per B2), platformFeeCents, cappedAtFee (bool), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. `amountCents = basisCents × rateBps`, capped at `platformFeeCents` when `REFERRAL_CAP_AT_PLATFORM_FEE` is on. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
+- **ReferralEarning**: `referralId, orderId (unique per referral), rateBps, basis (BUYER_PRICE|ASKING_PRICE, snapshotted from config), basisCents, platformFeeCents (both fees), cappedAtFee (bool), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. `amountCents = basisCents × rateBps`, capped at `platformFeeCents` when `REFERRAL_CAP_AT_PLATFORM_FEE` is on. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
 - **Badge**: `id, code, name, criteria (json: e.g. {completedSalesCount ≥ 10} or {gmvCents ≥ X})`
 - **Badge** gains `kind (VOLUME|COSMETIC)`. VOLUME badges are computed from sales. COSMETIC covers "Beta Founder", which goes to the first 100 sellers and is capped by `BETA_FOUNDER_LIMIT=100`.
 - **UserBadge**: `userId, badgeId, awardedAt, revokedAt?, basisSnapshot`. Volume badges are recomputed only from released orders that the fraud checks did not flag.
@@ -316,14 +317,14 @@ This data supports "what sells and what doesn't" analysis, and the Stage 2 rubri
 | **5** | Badges and referrals | 7, 6 | Volume-only badges computed from released orders. Referral codes, earnings from the platform fee, clawbacks, payouts via Stripe transfers, fraud freezes. |
 | **6** | Auctions (behind a flag) | 3 | Auction engine, proxy bids, soft close, no-reserve rules, retraction limits, payment window and relist/second chance, shill detection and penalties. **Not enabled in production until legal question L1 is resolved.** |
 | **7** | **Closed beta** | 9 | Invite-only (invite codes issued by the owner), small trusted group, feedback channel, compliance review on 100% of listings, daily fraud review, kill switches. |
-| **8** | Membership tiers | 5 | Stripe Billing subscriptions, fee-rate overrides by tier, featured listings, seller analytics, early-access flags. No recruiting perks. |
+| **8** | *(Removed: there is no paid tier.)* | 5 | Roadmap item 5 is satisfied by the free membership base. Seller analytics, if wanted, ship free. |
 | **9** | Circle-trade detection hardening and public launch readiness | 2, 10 | Graph job tuned on beta data, appeal flows, load testing auctions, counsel sign-off on all legal templates. |
 | **7a** | **Grading Stage 1 (during beta)** | 11 | 1–2 private partner authenticators onboarded. Owner-assigned authentication of high-value pieces (at or above `HIGH_VALUE_THRESHOLD_CENTS`). AUTHENTICATED results shown as listing badges. `ListingOutcome`, `ListingDailyStat`, and `ListingPriceChange` populated, with a basic "what sells" report on the GM dashboard. |
 | **10** | Grading Stage 2 and the full grading arm | 11 | Starts **once patterns emerge** in the Stage 1 data. In-house condition rubrics per category (textiles, pottery, stone tools, jewelry). Andrew's grades go to `PENDING_VERIFICATION`, and the same partner authenticators verify them before they go public. Accuracy (agreement-rate) dashboard. Per-item grading fees. After that: the MUSEUM_GRADE tier, the public verify page, and **opening the ANTIQUE vertical** via `ENABLED_VERTICALS`. |
 
 Notes:
 
-- The roadmap lists beta as item 9, after paid tiers. I recommend running the beta **before** paid tiers and **with auctions off unless L1 is cleared**, so the beta tests the risky core (compliance, escrow, fraud) without also introducing billing.
+- The beta runs **with auctions off unless L1 is cleared**, so it tests the risky core (compliance, escrow, fraud).
 - The owner dashboard (roadmap item 10) grows in every phase. Phase 4 is just where it becomes a complete tool.
 - The full grading schema, including Stage 2 verification and the sales-outcome tables, lands in the Phase 0 migration, so beta data is captured from day one.
 
@@ -343,7 +344,7 @@ Notes:
 - partner authentication badges on high-value pieces, and sales-outcome data capture;
 - the owner dashboard and the audit log.
 
-**Behind a flag / out:** auctions (pending L1), paid membership tiers, circle-trade graph detection (signals are collected; reviewers act on them manually during beta), the antiques vertical, in-house rubric grading (Stage 2), and MUSEUM_GRADE.
+**Behind a flag / out:** auctions (pending L1), circle-trade graph detection (signals are collected; reviewers act on them manually during beta), the antiques vertical, in-house rubric grading (Stage 2), and MUSEUM_GRADE.
 
 ### 6.2 Grading roadmap (roadmap item 11, revised by Andrew)
 
@@ -361,7 +362,6 @@ The brand is built on accuracy, not on having a lab on day one.
 |---|---|---|
 | Stripe Connect (Express) | Seller onboarding, KYC, charges, holds, transfers, payouts, 1099-K | Confirm with Stripe that our hold periods are allowed (see L4). |
 | Stripe Identity | Government ID plus selfie verification | Alternatives: Persona, Veriff. |
-| Stripe Billing | Membership subscriptions | Phase 8. |
 | Stripe Tax or TaxJar | Marketplace-facilitator sales tax collection and remittance | Required in most US states for marketplaces. |
 | Shipping tracking (EasyPost or Shippo) | Labels, tracking webhooks, delivered events that drive auto-release | |
 | Postmark / Resend | Transactional email (verification, reset, order events) | |
@@ -403,7 +403,7 @@ The brand is built on accuracy, not on having a lab on day one.
 
 - **B1.** Confirm the meaning of "multi-tenant": multi-vendor storefronts (proposed) or white-label sub-marketplaces?
 - **B2. Referral math.** *(Answered: a flat 5% of the sale price on every sale, capped at the fee. See section 0.)* Is it "10% / 5% **of the platform fee**" (proposed: the referrer earns 10% of the 10% fee on the first sale, i.e. 1% of the sale, then 5% of the fee) or "10% / 5% **of the sale price**" (which would consume the platform's entire fee on the first sale)? Does "ongoing" last forever or have a cap (for example 12 months)? When a paid tier lowers the fee, is the referral computed on the reduced fee? (Proposed: yes, on the fee actually collected.)
-- **B3.** Platform fee is 10% for the free tier. What fee rate and price should each paid tier have?
+- **B3.** *(Answered: 10% from each side, no paid tier. See section 0.)* Platform fee is 10% for the free tier. What fee rate and price should each paid tier have?
 - **B4.** Must buyers be ID-verified to purchase at fixed price, or only to bid and sell?
 - **B5.** The README mentions a "founders badge program". Is a non-volume "Founder/Beta" badge allowed, given roadmap item 7 (badges for real volume only)? Proposed: a cosmetic "Beta Founder" label kept separate from volume badges, with no fee or ranking effect.
 - **B6.** What scope is "used artifacts": only archaeological and cultural artifacts, or also general antiques and collectibles? This changes category trees, review load, and how much legal exposure we carry.

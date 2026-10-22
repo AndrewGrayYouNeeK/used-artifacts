@@ -1,9 +1,10 @@
 import { Suspense } from "react";
 import { UserIdentity } from "@/components/user-identity";
-import { economics, splitSale, type SellerTier } from "@/config/economics";
+import { economics, splitSale } from "@/config/economics";
 import { platform } from "@/config/platform";
 import { verifyAuditChain } from "@/domains/audit/audit";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
+import { formatUsd } from "@/domains/pricing/pricing";
 import { requireOwner } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
 import { SendResetButton } from "./send-reset-button";
@@ -122,44 +123,50 @@ async function Dashboard() {
 const pct = (bps: number) => `${(bps / 100).toFixed(bps % 100 === 0 ? 0 : 2)}%`;
 
 function EconomicsPanel() {
-  const sample = 10_000;
-  const rows: { label: string; tier: SellerTier; referred: boolean }[] = [
-    { label: "Free seller, not referred", tier: "FREE", referred: false },
-    { label: "Free seller, referred (every sale, incl. first)", tier: "FREE", referred: true },
-    { label: "Paid seller, not referred", tier: "PAID", referred: false },
-    { label: "Paid seller, referred (every sale, incl. first)", tier: "PAID", referred: true },
+  const rows: { label: string; referred: boolean }[] = [
+    { label: "Seller not referred", referred: false },
+    { label: "Referred seller (every sale, incl. first)", referred: true },
   ];
 
   return (
     <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
       <h2 className="font-serif text-lg font-semibold">Economics (config values)</h2>
       <p className="mt-1 text-sm text-stone-500">
-        Free fee {pct(economics.platformFeeBps.FREE)} · Paid fee {pct(economics.platformFeeBps.PAID)} at $
-        {(economics.paidTierPriceCents / 100).toFixed(2)}/mo · Referral {pct(economics.referralBps)} of
-        sale price on every recruit sale · Cap at fee:{" "}
-        {economics.referralCapAtPlatformFee ? "on" : "off"} · Verticals: {platform.enabledVerticals.join(", ")}
+        Buyer fee {pct(economics.buyerFeeBps)} built into the shown price · Seller fee{" "}
+        {pct(economics.sellerFeeBps)} deducted from payout · Free membership, no paid tier ·
+        Referral {pct(economics.referralBps)} of the{" "}
+        {economics.referralBasis === "BUYER_PRICE" ? "buyer price" : "asking price"} on every recruit
+        sale, paid from the platform take · Cap at take:{" "}
+        {economics.referralCapAtPlatformFee ? "on" : "off"} · Verticals:{" "}
+        {platform.enabledVerticals.join(", ")}
       </p>
       <table className="mt-4 w-full text-left text-sm">
         <thead className="text-xs uppercase tracking-wide text-stone-500">
           <tr>
-            <th className="py-2 pr-4">On a $100 sale</th>
-            <th className="py-2 pr-4">Platform fee</th>
+            <th className="py-2 pr-4">$100 asking price</th>
+            <th className="py-2 pr-4">Buyer pays</th>
+            <th className="py-2 pr-4">Seller payout</th>
+            <th className="py-2 pr-4">Platform take</th>
             <th className="py-2 pr-4">Referral</th>
             <th className="py-2">Platform nets (before Stripe fees)</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-stone-100">
           {rows.map((r) => {
-            const s = splitSale({ saleCents: sample, sellerTier: r.tier, referred: r.referred });
+            const s = splitSale({ askingCents: 10_000, referred: r.referred });
             return (
               <tr key={r.label}>
                 <td className="py-2 pr-4">{r.label}</td>
-                <td className="py-2 pr-4">${(s.platformFeeCents / 100).toFixed(2)}</td>
+                <td className="py-2 pr-4">{formatUsd(s.buyerPriceCents)}</td>
+                <td className="py-2 pr-4">{formatUsd(s.sellerPayoutCents)}</td>
+                <td className="py-2 pr-4">{formatUsd(s.platformFeeCents)}</td>
                 <td className="py-2 pr-4">
-                  {s.referral ? `$${(s.referral.amountCents / 100).toFixed(2)}${s.referral.cappedAtFee ? " (capped)" : ""}` : "-"}
+                  {s.referral
+                    ? `${formatUsd(s.referral.amountCents)}${s.referral.cappedAtFee ? " (capped)" : ""}`
+                    : "-"}
                 </td>
-                <td className={`py-2 font-medium ${s.platformNetCents === 0 ? "text-red-700" : ""}`}>
-                  ${(s.platformNetCents / 100).toFixed(2)}
+                <td className={`py-2 font-medium ${s.platformNetCents <= 0 ? "text-red-700" : ""}`}>
+                  {formatUsd(s.platformNetCents)}
                 </td>
               </tr>
             );

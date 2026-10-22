@@ -43,26 +43,25 @@ model User {
   loginEvents             LoginEvent[]
   proprietor              Proprietor?
 
-  ownedStorefronts      Storefront[]        @relation("StorefrontOwner")
+  ownedStorefronts      Storefront[]            @relation("StorefrontOwner")
   storefrontMemberships StorefrontMember[]
-  listings              Listing[]           @relation("ListingSeller")
+  listings              Listing[]               @relation("ListingSeller")
   provenanceStatements  ProvenanceStatement[]
-  complianceReviews     ComplianceReview[]  @relation("ComplianceReviewer")
+  complianceReviews     ComplianceReview[]      @relation("ComplianceReviewer")
   bids                  Bid[]
   nonPayingStrikes      NonPayingBidderStrike[]
-  purchases             Order[]             @relation("OrderBuyer")
-  sales                 Order[]             @relation("OrderSeller")
-  disputesOpened        Dispute[]           @relation("DisputeOpener")
-  linksA                AccountLink[]       @relation("AccountLinkA")
-  linksB                AccountLink[]       @relation("AccountLinkB")
-  enforcementActions    EnforcementAction[] @relation("EnforcementSubject")
-  enforcementsTaken     EnforcementAction[] @relation("EnforcementActor")
-  membership            Membership?
-  referralsMade         Referral[]          @relation("Referrer")
-  referredBy            Referral?           @relation("Referee")
+  purchases             Order[]                 @relation("OrderBuyer")
+  sales                 Order[]                 @relation("OrderSeller")
+  disputesOpened        Dispute[]               @relation("DisputeOpener")
+  linksA                AccountLink[]           @relation("AccountLinkA")
+  linksB                AccountLink[]           @relation("AccountLinkB")
+  enforcementActions    EnforcementAction[]     @relation("EnforcementSubject")
+  enforcementsTaken     EnforcementAction[]     @relation("EnforcementActor")
+  referralsMade         Referral[]              @relation("Referrer")
+  referredBy            Referral?               @relation("Referee")
   badges                UserBadge[]
   gradingSubmissions    GradingSubmission[]
-  gradingResultsGraded  GradingResult[]     @relation("InHouseGrader")
+  gradingResultsGraded  GradingResult[]         @relation("InHouseGrader")
   auditEvents           AuditEvent[]
 }
 
@@ -82,16 +81,16 @@ model Session {
 }
 
 model PasswordResetToken {
-  id          String    @id @default(cuid())
-  userId      String
-  tokenHash   String    @unique
-  expiresAt   DateTime
-  usedAt      DateTime?
-  requestedIp String?
+  id                String    @id @default(cuid())
+  userId            String
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  usedAt            DateTime?
+  requestedIp       String?
   /// Set when the owner triggered the email from the GM dashboard (still delivered only to the user).
   requestedByUserId String?
-  createdAt   DateTime  @default(now())
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime  @default(now())
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
 }
@@ -169,17 +168,17 @@ enum StorefrontMemberRole {
 }
 
 model Storefront {
-  id              String           @id @default(cuid())
-  slug            String           @unique
+  id              String             @id @default(cuid())
+  slug            String             @unique
   name            String
   ownerUserId     String
-  stripeAccountId String?          @unique
-  payoutsEnabled  Boolean          @default(false)
-  status          StorefrontStatus @default(ACTIVE)
+  stripeAccountId String?            @unique
+  payoutsEnabled  Boolean            @default(false)
+  status          StorefrontStatus   @default(ACTIVE)
   policies        Json?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  owner           User             @relation("StorefrontOwner", fields: [ownerUserId], references: [id])
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  owner           User               @relation("StorefrontOwner", fields: [ownerUserId], references: [id])
   members         StorefrontMember[]
   listings        Listing[]
   orders          Order[]
@@ -204,17 +203,17 @@ enum Vertical {
 }
 
 model Category {
-  id                     String          @id @default(cuid())
+  id                     String               @id @default(cuid())
   parentId               String?
   name                   String
-  slug                   String          @unique
+  slug                   String               @unique
   /// Visibility is controlled by the ENABLED_VERTICALS config value.
   vertical               Vertical
-  isNativeAmerican       Boolean         @default(false)
-  requiresEnhancedReview Boolean         @default(false)
-  sortOrder              Int             @default(0)
-  parent                 Category?       @relation("CategoryTree", fields: [parentId], references: [id])
-  children               Category[]      @relation("CategoryTree")
+  isNativeAmerican       Boolean              @default(false)
+  requiresEnhancedReview Boolean              @default(false)
+  sortOrder              Int                  @default(0)
+  parent                 Category?            @relation("CategoryTree", fields: [parentId], references: [id])
+  children               Category[]           @relation("CategoryTree")
   listings               Listing[]
   rubrics                GradingRubric[]
   feeSchedules           GradingFeeSchedule[]
@@ -248,9 +247,9 @@ model Listing {
   /// Seller's self-reported condition; compared later against partner grades.
   sellerConditionGrade String?
   format               ListingFormat
-  priceCents           Int?
+  /// What the seller asks. Buyers see askingPriceCents + buyer fee (owner decision B3).
+  askingPriceCents     Int?
   status               ListingStatus @default(DRAFT)
-  featuredUntil        DateTime?
   publishedAt          DateTime?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
@@ -307,26 +306,26 @@ model ProvenanceStatementTemplate {
 
 /// Immutable once signed; edits create a new row.
 model ProvenanceStatement {
-  id                                          String            @id @default(cuid())
-  listingId                                   String
-  sellerUserId                                String
-  templateId                                  String
-  acquisitionSource                           AcquisitionSource
-  acquisitionState                            String?
-  acquisitionYearApprox                       Int?
-  landownerPermissionDocKey                   String?
-  priorOwnerChain                             Json?
-  attestsNotFederalStateOrTribalLand          Boolean
+  id                                           String                      @id @default(cuid())
+  listingId                                    String
+  sellerUserId                                 String
+  templateId                                   String
+  acquisitionSource                            AcquisitionSource
+  acquisitionState                             String?
+  acquisitionYearApprox                        Int?
+  landownerPermissionDocKey                    String?
+  priorOwnerChain                              Json?
+  attestsNotFederalStateOrTribalLand           Boolean
   attestsNotHumanRemainsFuneralSacredPatrimony Boolean
-  attestsNotIndianMadeMisrepresented          Boolean
-  signedName                                  String
-  signedAt                                    DateTime          @default(now())
-  ip                                          String?
-  userAgent                                   String?
-  signatureHash                               String
-  listing                                     Listing           @relation(fields: [listingId], references: [id])
-  seller                                      User              @relation(fields: [sellerUserId], references: [id])
-  template                                    ProvenanceStatementTemplate @relation(fields: [templateId], references: [id])
+  attestsNotIndianMadeMisrepresented           Boolean
+  signedName                                   String
+  signedAt                                     DateTime                    @default(now())
+  ip                                           String?
+  userAgent                                    String?
+  signatureHash                                String
+  listing                                      Listing                     @relation(fields: [listingId], references: [id])
+  seller                                       User                        @relation(fields: [sellerUserId], references: [id])
+  template                                     ProvenanceStatementTemplate @relation(fields: [templateId], references: [id])
 
   @@index([listingId])
 }
@@ -382,8 +381,8 @@ enum AuctionStatus {
 }
 
 model Auction {
-  id                 String        @id @default(cuid())
-  listingId          String        @unique
+  id                 String                  @id @default(cuid())
+  listingId          String                  @unique
   startsAt           DateTime
   endsAt             DateTime
   originalEndsAt     DateTime
@@ -392,11 +391,11 @@ model Auction {
   isNoReserve        Boolean
   softCloseMinutes   Int
   paymentWindowHours Int
-  status             AuctionStatus @default(SCHEDULED)
-  currentHighBidId   String?       @unique
-  listing            Listing       @relation(fields: [listingId], references: [id])
-  bids               Bid[]         @relation("AuctionBids")
-  currentHighBid     Bid?          @relation("AuctionHighBid", fields: [currentHighBidId], references: [id])
+  status             AuctionStatus           @default(SCHEDULED)
+  currentHighBidId   String?                 @unique
+  listing            Listing                 @relation(fields: [listingId], references: [id])
+  bids               Bid[]                   @relation("AuctionBids")
+  currentHighBid     Bid?                    @relation("AuctionHighBid", fields: [currentHighBidId], references: [id])
   nonPayingStrikes   NonPayingBidderStrike[]
 }
 
@@ -409,19 +408,19 @@ enum BidStatus {
 }
 
 model Bid {
-  id             String         @id @default(cuid())
-  auctionId      String
-  bidderUserId   String
-  amountCents    Int
-  maxProxyCents  Int?
-  placedAt       DateTime       @default(now())
-  ipHash         String?
-  deviceIdHash   String?
-  status         BidStatus      @default(ACTIVE)
-  auction        Auction        @relation("AuctionBids", fields: [auctionId], references: [id])
-  bidder         User           @relation(fields: [bidderUserId], references: [id])
-  highBidOf      Auction?       @relation("AuctionHighBid")
-  retraction     BidRetraction?
+  id            String         @id @default(cuid())
+  auctionId     String
+  bidderUserId  String
+  amountCents   Int
+  maxProxyCents Int?
+  placedAt      DateTime       @default(now())
+  ipHash        String?
+  deviceIdHash  String?
+  status        BidStatus      @default(ACTIVE)
+  auction       Auction        @relation("AuctionBids", fields: [auctionId], references: [id])
+  bidder        User           @relation(fields: [bidderUserId], references: [id])
+  highBidOf     Auction?       @relation("AuctionHighBid")
+  retraction    BidRetraction?
 
   @@index([auctionId, amountCents])
   @@index([bidderUserId, placedAt])
@@ -469,28 +468,37 @@ enum OrderStatus {
 }
 
 model Order {
-  id               String      @id @default(cuid())
-  listingId        String
-  buyerUserId      String
-  sellerUserId     String
-  storefrontId     String
-  source           OrderSource
-  subtotalCents    Int
-  shippingCents    Int         @default(0)
-  taxCents         Int         @default(0)
-  platformFeeCents Int
-  feeRateBps       Int
-  status           OrderStatus @default(CREATED)
-  paymentDueAt     DateTime?
-  deliveredAt      DateTime?
+  id                String      @id @default(cuid())
+  listingId         String
+  buyerUserId       String
+  sellerUserId      String
+  storefrontId      String
+  source            OrderSource
+  /// Fee snapshot at purchase time; config changes never rewrite past orders.
+  askingPriceCents  Int
+  buyerFeeBps       Int
+  buyerFeeCents     Int
+  /// askingPriceCents + buyerFeeCents: the item price the buyer saw and paid, with no fee on top.
+  buyerPriceCents   Int
+  sellerFeeBps      Int
+  sellerFeeCents    Int
+  /// askingPriceCents - sellerFeeCents.
+  sellerPayoutCents Int
+  /// buyerFeeCents + sellerFeeCents.
+  platformFeeCents  Int
+  shippingCents     Int         @default(0)
+  taxCents          Int         @default(0)
+  status            OrderStatus @default(CREATED)
+  paymentDueAt      DateTime?
+  deliveredAt       DateTime?
   releaseEligibleAt DateTime?
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
-  listing          Listing          @relation(fields: [listingId], references: [id])
-  buyer            User             @relation("OrderBuyer", fields: [buyerUserId], references: [id])
-  seller           User             @relation("OrderSeller", fields: [sellerUserId], references: [id])
-  storefront       Storefront       @relation(fields: [storefrontId], references: [id])
+  listing          Listing           @relation(fields: [listingId], references: [id])
+  buyer            User              @relation("OrderBuyer", fields: [buyerUserId], references: [id])
+  seller           User              @relation("OrderSeller", fields: [sellerUserId], references: [id])
+  storefront       Storefront        @relation(fields: [storefrontId], references: [id])
   shipment         Shipment?
   payments         Payment[]
   transfers        Transfer[]
@@ -498,7 +506,7 @@ model Order {
   disputes         Dispute[]
   ledgerEntries    LedgerEntry[]
   referralEarnings ReferralEarning[]
-  firstSaleOf      Referral?        @relation("ReferralFirstSale")
+  firstSaleOf      Referral?         @relation("ReferralFirstSale")
 
   @@index([buyerUserId])
   @@index([sellerUserId])
@@ -604,27 +612,27 @@ enum LedgerAccountKind {
 }
 
 model LedgerAccount {
-  id       String            @id @default(cuid())
+  id      String            @id @default(cuid())
   /// e.g. "platform_revenue", "seller_payable:<userId>", "buyer_held:<orderId>"
-  code     String            @unique
-  kind     LedgerAccountKind
-  debits   LedgerEntry[]     @relation("LedgerDebit")
-  credits  LedgerEntry[]     @relation("LedgerCredit")
+  code    String            @unique
+  kind    LedgerAccountKind
+  debits  LedgerEntry[]     @relation("LedgerDebit")
+  credits LedgerEntry[]     @relation("LedgerCredit")
 }
 
 model LedgerEntry {
-  id              String        @id @default(cuid())
-  debitAccountId  String
-  creditAccountId String
-  amountCents     Int
-  orderId         String?
+  id                String           @id @default(cuid())
+  debitAccountId    String
+  creditAccountId   String
+  amountCents       Int
+  orderId           String?
   referralEarningId String?
-  memo            String
-  createdAt       DateTime      @default(now())
-  debitAccount    LedgerAccount @relation("LedgerDebit", fields: [debitAccountId], references: [id])
-  creditAccount   LedgerAccount @relation("LedgerCredit", fields: [creditAccountId], references: [id])
-  order           Order?        @relation(fields: [orderId], references: [id])
-  referralEarning ReferralEarning? @relation(fields: [referralEarningId], references: [id])
+  memo              String
+  createdAt         DateTime         @default(now())
+  debitAccount      LedgerAccount    @relation("LedgerDebit", fields: [debitAccountId], references: [id])
+  creditAccount     LedgerAccount    @relation("LedgerCredit", fields: [creditAccountId], references: [id])
+  order             Order?           @relation(fields: [orderId], references: [id])
+  referralEarning   ReferralEarning? @relation(fields: [referralEarningId], references: [id])
 
   @@index([orderId])
 }
@@ -717,38 +725,8 @@ model ItemFingerprint {
   @@index([textHash])
 }
 
-// ───────────────────────────── Growth: membership, referrals, badges ─────────────────────────────
-
-/// Deliberately has no referral/recruiting columns (roadmap item 5).
-/// Fee rate and price are copied from src/config/economics.ts when seeded.
-model MembershipTier {
-  id                     String       @id @default(cuid())
-  code                   String       @unique
-  name                   String
-  monthlyPriceCents      Int
-  feeRateBps             Int
-  featuredListingCredits Int          @default(0)
-  analyticsEnabled       Boolean      @default(false)
-  earlyAccess            Boolean      @default(false)
-  memberships            Membership[]
-}
-
-enum MembershipStatus {
-  ACTIVE
-  PAST_DUE
-  CANCELED
-}
-
-model Membership {
-  id                   String           @id @default(cuid())
-  userId               String           @unique
-  tierId               String
-  stripeSubscriptionId String?          @unique
-  status               MembershipStatus
-  currentPeriodEnd     DateTime?
-  user                 User             @relation(fields: [userId], references: [id])
-  tier                 MembershipTier   @relation(fields: [tierId], references: [id])
-}
+// ───────────────────────────── Growth: referrals, badges ─────────────────────────────
+// Membership is free for everyone; there is no paid tier (owner decision B3).
 
 model Referral {
   id               String            @id @default(cuid())
@@ -763,9 +741,9 @@ model Referral {
   earnings         ReferralEarning[]
 }
 
-enum ReferralEarningKind {
-  FIRST_SALE
-  ONGOING
+enum ReferralBasis {
+  BUYER_PRICE
+  ASKING_PRICE
 }
 
 enum ReferralEarningStatus {
@@ -779,9 +757,9 @@ model ReferralEarning {
   id               String                @id @default(cuid())
   referralId       String
   orderId          String
-  kind             ReferralEarningKind
   rateBps          Int
-  /// Sale price (owner decision B2).
+  /// BUYER_PRICE or ASKING_PRICE, snapshotted from config (owner decision B2).
+  basis            ReferralBasis
   basisCents       Int
   platformFeeCents Int
   cappedAtFee      Boolean
@@ -863,18 +841,18 @@ enum AuthenticatorStatus {
 }
 
 model Authenticator {
-  id                String              @id @default(cuid())
-  name              String
-  organization      String?
-  credentials       String
+  id                   String              @id @default(cuid())
+  name                 String
+  organization         String?
+  credentials          String
   specialtyCategoryIds String[]
-  status            AuthenticatorStatus @default(ACTIVE)
-  agreementSignedAt DateTime?
-  payoutAccount     String?
-  createdAt         DateTime            @default(now())
-  submissions       GradingSubmission[]
-  results           GradingResult[]
-  verifications     GradeVerification[]
+  status               AuthenticatorStatus @default(ACTIVE)
+  agreementSignedAt    DateTime?
+  payoutAccount        String?
+  createdAt            DateTime            @default(now())
+  submissions          GradingSubmission[]
+  results              GradingResult[]
+  verifications        GradeVerification[]
 }
 
 model GradingRubric {
@@ -994,12 +972,12 @@ model ListingDailyStat {
 }
 
 model ListingPriceChange {
-  id            String   @id @default(cuid())
-  listingId     String
-  oldPriceCents Int
-  newPriceCents Int
-  changedAt     DateTime @default(now())
-  listing       Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(cuid())
+  listingId           String
+  oldAskingPriceCents Int
+  newAskingPriceCents Int
+  changedAt           DateTime @default(now())
+  listing             Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
   @@index([listingId])
 }
@@ -1021,6 +999,7 @@ model ListingOutcome {
   outcome              ListingOutcomeType
   firstAskCents        Int?
   finalAskCents        Int?
+  /// Buyer price actually paid (asking + buyer fee).
   salePriceCents       Int?
   daysLive             Int
   totalViews           Int
