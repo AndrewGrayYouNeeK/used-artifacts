@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { AcquisitionSource } from "@/generated/prisma/enums";
+import { AcquisitionSource, ListingFormat } from "@/generated/prisma/enums";
+import { AUCTION_DURATIONS_DAYS } from "@/domains/auctions/engine";
 import { parseUsdToCents } from "@/domains/pricing/pricing";
 import type { Attestation } from "@/domains/compliance/provenance-template";
 import { legalNamesMatch } from "@/domains/identity/legal-name";
@@ -20,6 +21,20 @@ export const AskingPriceSchema = z.string().transform((v, ctx) => {
   }
   return cents;
 });
+
+const auctionAmount = (label: string) =>
+  z.string().transform((v, ctx) => {
+    const cents = parseUsdToCents(v);
+    if (cents === null || cents < MIN_ASKING_CENTS || cents > MAX_ASKING_CENTS) {
+      ctx.addIssue({ code: "custom", message: `${label} must be between $1 and $1,000,000.` });
+      return z.NEVER;
+    }
+    return cents;
+  });
+
+/** Seller-entered auction amounts are asking amounts; bidders see them with the buyer fee built in. */
+export const StartingBidSchema = auctionAmount("Starting bid");
+export const ReservePriceSchema = auctionAmount("Reserve");
 
 export const ShippingPriceSchema = z.string().transform((v, ctx) => {
   if (v.trim() === "") return 0;
@@ -47,7 +62,14 @@ export const ListingSubmissionSchema = z.object({
     .trim()
     .min(20, { error: "Describe the item in at least 20 characters." })
     .max(5000),
-  askingPrice: AskingPriceSchema,
+  /** Omitted means FIXED. */
+  format: z.enum(ListingFormat).optional(),
+  /** FIXED only. */
+  askingPrice: AskingPriceSchema.optional(),
+  /** AUCTION only; no reserve means a no-reserve auction. */
+  startingBid: StartingBidSchema.optional(),
+  reservePrice: ReservePriceSchema.optional(),
+  durationDays: z.number().int().optional(),
   shipping: ShippingPriceSchema.default(0),
   sellerConditionGrade: optionalText(60),
   regionOfOrigin: optionalText(120),
@@ -95,6 +117,20 @@ export function checkListingRules(input: ListingSubmission, ctx: RuleContext): R
   const need = (field: keyof ListingSubmission, ok: unknown, message: string) => {
     if (!ok) issues.push({ field, message });
   };
+
+  if ((input.format ?? "FIXED") === "FIXED") {
+    need("askingPrice", input.askingPrice !== undefined, "Enter an asking price.");
+  } else {
+    need("startingBid", input.startingBid !== undefined, "Enter a starting bid.");
+    need(
+      "durationDays",
+      (AUCTION_DURATIONS_DAYS as readonly number[]).includes(input.durationDays ?? 0),
+      `Choose ${AUCTION_DURATIONS_DAYS.join(", ")} days.`,
+    );
+    if (input.startingBid !== undefined && input.reservePrice !== undefined && input.reservePrice < input.startingBid) {
+      issues.push({ field: "reservePrice", message: "The reserve can't be below the starting bid." });
+    }
+  }
 
   if (ctx.category.isNativeAmerican) {
     need("regionOfOrigin", input.regionOfOrigin, "Native American items need the region of origin.");

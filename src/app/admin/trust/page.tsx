@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { decideFrozenEarningAction, reviewFraudSignalAction } from "@/app/actions/admin";
+import { decideRetractionAction, voidBidsAction } from "@/app/actions/auctions";
+import { platform } from "@/config/platform";
 import { ActionForm, inputClass } from "@/components/action-form";
 import { signalAccounts } from "@/domains/admin/signals";
 import { formatUsd } from "@/domains/pricing/pricing";
@@ -21,9 +23,15 @@ export default function AdminTrustPage() {
 const label = (v: string) => v.toLowerCase().replaceAll("_", " ");
 const time = (d: Date) => d.toISOString().replace("T", " ").slice(0, 16);
 
+/** SHILL signals carry the auction they were raised on. */
+const auctionIdOf = (evidence: unknown) =>
+  typeof evidence === "object" && evidence !== null && "auctionId" in evidence && typeof evidence.auctionId === "string"
+    ? evidence.auctionId
+    : null;
+
 async function Trust() {
   await requireStaff();
-  const [signals, active, reviewed, frozen] = await Promise.all([
+  const [signals, active, reviewed, frozen, retractions] = await Promise.all([
     db.fraudSignal.findMany({ where: { status: "OPEN" }, orderBy: [{ score: "desc" }, { createdAt: "asc" }], take: 100 }),
     db.enforcementAction.findMany({
       where: { liftedAt: null, type: { in: ["SUSPENSION", "BAN"] } },
@@ -44,6 +52,19 @@ async function Trust() {
       include: {
         referral: { include: { referrer: { select: { id: true, displayName: true } }, referee: { select: { id: true, displayName: true } } } },
         order: { select: { id: true, buyerUserId: true, listing: { select: { title: true } } } },
+      },
+    }),
+    db.bidRetraction.findMany({
+      where: { status: "PENDING" },
+      orderBy: { createdAt: "asc" },
+      take: 100,
+      include: {
+        bid: {
+          include: {
+            bidder: { select: { id: true, displayName: true } },
+            auction: { select: { status: true, endsAt: true, listing: { select: { id: true, title: true, updatedAt: true } } } },
+          },
+        },
       },
     }),
   ]);
@@ -93,10 +114,62 @@ async function Trust() {
                 </select>
                 <input name="notes" required minLength={5} placeholder="What you found" className={inputClass} />
               </ActionForm>
+              {s.detector === "SHILL" && s.subjectType === "User" && auctionIdOf(s.evidence) && (
+                <ActionForm action={voidBidsAction} submitLabel="Void their bids on this auction" variant="danger" className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+                  <input type="hidden" name="auctionId" value={auctionIdOf(s.evidence)!} />
+                  <input type="hidden" name="bidderUserId" value={s.subjectId} />
+                  <input type="hidden" name="fraudSignalId" value={s.id} />
+                  <input name="reason" required minLength={5} placeholder="Reason (emailed to the bidder)" className={inputClass} />
+                </ActionForm>
+              )}
             </li>
           ))}
         </ul>
       </section>
+
+      {(platform.auctionsEnabled || retractions.length > 0) && (
+        <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+          <h2 className="font-serif text-lg font-semibold">Bid retraction requests</h2>
+          <p className="mt-1 text-sm text-stone-500">
+            Typos are approved automatically. These claim a materially changed description or an unreachable seller; the
+            bid stands until you decide.
+          </p>
+          {retractions.length === 0 && <p className="mt-4 text-sm text-stone-500">Nothing pending.</p>}
+          <ul className="mt-4 space-y-4">
+            {retractions.map((r) => (
+              <li key={r.id} className="rounded-xl border border-stone-100 p-4 text-sm">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="font-medium">
+                    <Link href={`/admin/users/${r.bid.bidder.id}`} className="underline">
+                      {r.bid.bidder.displayName}
+                    </Link>{" "}
+                    · {label(r.kind)} · max {formatUsd(r.bid.maxProxyCents)}
+                  </span>
+                  <span className="text-xs text-stone-500">
+                    <Link href={`/listings/${r.bid.auction.listing.id}`} className="underline">
+                      {r.bid.auction.listing.title}
+                    </Link>{" "}
+                    · auction {label(r.bid.auction.status)}
+                    {r.bid.auction.endsAt && ` until ${time(r.bid.auction.endsAt)}`}
+                  </span>
+                </div>
+                <p className="mt-1 text-stone-700">{r.reason}</p>
+                <p className="mt-1 text-xs text-stone-500">
+                  Bid placed {time(r.bid.placedAt)} · listing last changed {time(r.bid.auction.listing.updatedAt)}
+                </p>
+                <ActionForm action={decideRetractionAction} submitLabel="Record decision" variant="secondary" className="mt-3 grid gap-2 sm:grid-cols-[auto_1fr_auto]">
+                  <input type="hidden" name="retractionId" value={r.id} />
+                  <select name="decision" className={inputClass} defaultValue="DENY">
+                    <option value="DENY">Decline</option>
+                    <option value="APPROVE">Approve</option>
+                  </select>
+                  <input name="notes" required minLength={5} placeholder="Decision (emailed to the bidder)" className={inputClass} />
+                </ActionForm>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
         <h2 className="font-serif text-lg font-semibold">Frozen referral earnings</h2>

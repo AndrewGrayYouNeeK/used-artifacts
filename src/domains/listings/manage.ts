@@ -1,6 +1,7 @@
 import type { Db } from "@/lib/db";
 import { writeAuditEvent } from "@/domains/audit/audit";
 import type { RequestContext } from "@/domains/identity/accounts";
+import { cancelOpenAuction } from "@/domains/auctions/lifecycle";
 import { recordListingOutcome } from "./outcomes";
 import { MAX_ASKING_CENTS, MIN_ASKING_CENTS } from "./rules";
 
@@ -32,7 +33,9 @@ export async function changeAskingPrice(
   }
   const listing = await deps.db.listing.findUnique({ where: { id: input.listingId } });
   if (!listing || listing.sellerUserId !== input.sellerUserId) return { ok: false, reason: "NOT_FOUND" };
-  if (listing.status !== "LIVE" && listing.status !== "PENDING_REVIEW") return { ok: false, reason: "NOT_EDITABLE" };
+  if (listing.format !== "FIXED" || (listing.status !== "LIVE" && listing.status !== "PENDING_REVIEW")) {
+    return { ok: false, reason: "NOT_EDITABLE" };
+  }
   if (listing.askingPriceCents === input.askingPriceCents) return { ok: false, reason: "UNCHANGED" };
   const active = await deps.db.order.count({ where: { listingId: listing.id, status: "CREATED" } });
   if (active > 0) return { ok: false, reason: "NOT_EDITABLE" };
@@ -73,8 +76,15 @@ export async function withdrawListing(
   if (listing.status !== "LIVE" && listing.status !== "PENDING_REVIEW") return { ok: false, reason: "NOT_WITHDRAWABLE" };
   const active = await deps.db.order.count({ where: { listingId: listing.id, status: { in: ["CREATED", "PAID_HELD"] } } });
   if (active > 0) return { ok: false, reason: "NOT_WITHDRAWABLE" };
+  if (listing.format === "AUCTION") {
+    const bids = await deps.db.bid.count({
+      where: { auction: { listingId: listing.id, status: "LIVE" }, status: { in: ["ACTIVE", "WINNING", "OUTBID"] } },
+    });
+    if (bids > 0) return { ok: false, reason: "NOT_WITHDRAWABLE" };
+  }
   await deps.db.$transaction(async (tx) => {
     await tx.listing.update({ where: { id: listing.id }, data: { status: "ENDED" } });
+    await cancelOpenAuction(tx, listing.id, clock(deps));
     await tx.complianceReview.updateMany({
       where: { listingId: listing.id, status: "OPEN" },
       data: { status: "REJECTED", decision: "WITHDRAWN", notes: "Withdrawn by the seller", decidedAt: clock(deps) },

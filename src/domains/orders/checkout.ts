@@ -1,4 +1,4 @@
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, type Order } from "@/generated/prisma/client";
 import { writeAuditEvent } from "@/domains/audit/audit";
 import type { RequestContext } from "@/domains/identity/accounts";
 import { isVerticalEnabled } from "@/config/platform";
@@ -153,31 +153,43 @@ export async function startCheckout(
 
   const order = await deps.db.order.findUniqueOrThrow({ where: { id: orderId } });
   try {
-    const checkout = await deps.payments.createCheckout({
-      orderId,
-      lines: [
-        { name: listing.title, amountCents: prices.buyerPriceCents },
-        ...(listing.shippingCents > 0 ? [{ name: "Shipping (US)", amountCents: listing.shippingCents }] : []),
-      ],
-      transferGroup: `order_${orderId}`,
-      customerEmail: input.buyerEmail,
-      successUrl: `${deps.appUrl}/orders/${orderId}?paid=1`,
-      cancelUrl: `${deps.appUrl}/listings/${listing.id}`,
-      expiresAt: order.paymentDueAt!,
-      automaticTax: deps.automaticTax ?? false,
-    });
-    await deps.db.payment.create({
-      data: {
-        orderId,
-        provider: deps.payments.name,
-        checkoutSessionId: checkout.checkoutSessionId,
-        amountCents: prices.buyerPriceCents + listing.shippingCents,
-        status: "REQUIRES_PAYMENT",
-      },
-    });
-    return { ok: true, orderId, url: checkout.url };
+    const url = await openCheckoutSession(deps, order, { id: listing.id, title: listing.title }, input.buyerEmail, order.paymentDueAt!);
+    return { ok: true, orderId, url };
   } catch (err) {
     await deps.db.$transaction((tx) => transition(tx, order, "PAYMENT_WINDOW_EXPIRED"));
     throw err;
   }
+}
+
+/** Opens a hosted checkout for an existing unpaid order: the buyer price plus shipping, never a fee on top. */
+export async function openCheckoutSession(
+  deps: OrdersDeps,
+  order: Pick<Order, "id" | "buyerPriceCents" | "shippingCents">,
+  listing: { id: string; title: string },
+  buyerEmail: string,
+  expiresAt: Date,
+): Promise<string> {
+  const checkout = await deps.payments.createCheckout({
+    orderId: order.id,
+    lines: [
+      { name: listing.title, amountCents: order.buyerPriceCents },
+      ...(order.shippingCents > 0 ? [{ name: "Shipping (US)", amountCents: order.shippingCents }] : []),
+    ],
+    transferGroup: `order_${order.id}`,
+    customerEmail: buyerEmail,
+    successUrl: `${deps.appUrl}/orders/${order.id}?paid=1`,
+    cancelUrl: `${deps.appUrl}/listings/${listing.id}`,
+    expiresAt,
+    automaticTax: deps.automaticTax ?? false,
+  });
+  await deps.db.payment.create({
+    data: {
+      orderId: order.id,
+      provider: deps.payments.name,
+      checkoutSessionId: checkout.checkoutSessionId,
+      amountCents: order.buyerPriceCents + order.shippingCents,
+      status: "REQUIRES_PAYMENT",
+    },
+  });
+  return checkout.url;
 }

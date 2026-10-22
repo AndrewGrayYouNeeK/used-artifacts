@@ -3,6 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { after, connection } from "next/server";
 import { economics, feeRates } from "@/config/economics";
+import { platform } from "@/config/platform";
+import { auctionView } from "@/domains/auctions/auctions";
+import { AuctionPanel } from "./auction-panel";
 import { UserIdentity } from "@/components/user-identity";
 import { IACA_DISCLOSURE } from "@/domains/compliance/provenance-template";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
@@ -59,6 +62,7 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
   if (listing.status === "LIVE" && !isSeller) after(() => recordListingView(db, listing.id));
   const seller = await getPublicIdentity(db, listing.sellerUserId);
   const prices = listing.askingPriceCents === null ? null : priceBreakdown(listing.askingPriceCents, feeRates());
+  const auction = listing.format === "AUCTION" && platform.auctionsEnabled ? await auctionView(db, listing, viewer?.id ?? null) : null;
   const statement = listing.provenanceStatements[0];
 
   return (
@@ -129,7 +133,18 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
           )}
         </dl>
         <div className="mt-6">
-          {listing.status === "SOLD" ? (
+          {listing.format === "AUCTION" ? (
+            auction ? (
+              <AuctionPanel
+                auction={auction}
+                viewerId={viewer?.id ?? null}
+                isSeller={isSeller}
+                payoutsReady={listing.storefront.payoutsEnabled}
+              />
+            ) : (
+              <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">Auctions are not available.</p>
+            )
+          ) : listing.status === "SOLD" ? (
             <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">Sold.</p>
           ) : listing.status !== "LIVE" ? null : isSeller ? (
             <p className="rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-600">This is your listing.</p>

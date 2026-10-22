@@ -51,6 +51,7 @@ model User {
   provenanceStatements  ProvenanceStatement[]
   complianceReviews     ComplianceReview[]      @relation("ComplianceReviewer")
   bids                  Bid[]
+  auctionsWon           Auction[]               @relation("AuctionWinner")
   nonPayingStrikes      NonPayingBidderStrike[]
   purchases             Order[]                 @relation("OrderBuyer")
   sales                 Order[]                 @relation("OrderSeller")
@@ -308,7 +309,7 @@ model Listing {
   photos               ListingPhoto[]
   provenanceStatements ProvenanceStatement[]
   complianceReviews    ComplianceReview[]
-  auction              Auction?
+  auctions             Auction[]
   orders               Order[]
   fingerprint          ItemFingerprint?
   aiAnalyses           AiAnalysis[]
@@ -448,31 +449,61 @@ model ProhibitedTerm {
 // ───────────────────────────── Auctions ─────────────────────────────
 
 enum AuctionStatus {
+  /// Waiting for compliance review.
   SCHEDULED
   LIVE
+  /// Closed with a winner who has an unpaid order (AUCTION or SECOND_CHANCE).
   ENDED
+  /// The winner paid.
   SETTLED
+  /// Closed with no bids, or the reserve was not met.
+  UNSOLD
+  /// The winner didn't pay in time; the seller picks a second-chance offer or a relist.
+  AWAITING_SELLER
+  /// Replaced by a new auction on the same listing.
   RELISTED
   CANCELLED
 }
 
+/// Every amount here is a buyer price (asking + buyer fee), the same terms bidders see.
 model Auction {
-  id                 String                  @id @default(cuid())
-  listingId          String                  @unique
-  startsAt           DateTime
-  endsAt             DateTime
-  originalEndsAt     DateTime
-  startingBidCents   Int
-  reserveCents       Int?
-  isNoReserve        Boolean
-  softCloseMinutes   Int
-  paymentWindowHours Int
-  status             AuctionStatus           @default(SCHEDULED)
-  currentHighBidId   String?                 @unique
-  listing            Listing                 @relation(fields: [listingId], references: [id])
-  bids               Bid[]                   @relation("AuctionBids")
-  currentHighBid     Bid?                    @relation("AuctionHighBid", fields: [currentHighBidId], references: [id])
-  nonPayingStrikes   NonPayingBidderStrike[]
+  id                  String                  @id @default(cuid())
+  listingId           String
+  status              AuctionStatus           @default(SCHEDULED)
+  startingBidCents    Int
+  /// Hidden from bidders; they only see whether it is met.
+  reserveCents        Int?
+  isNoReserve         Boolean
+  durationDays        Int
+  softCloseMinutes    Int
+  paymentWindowHours  Int
+  /// Set when the listing is approved and the auction goes live.
+  startsAt            DateTime?
+  endsAt              DateTime?
+  originalEndsAt      DateTime?
+  currentPriceCents   Int?
+  currentHighBidId    String?                 @unique
+  bidCount            Int                     @default(0)
+  reserveMet          Boolean                 @default(false)
+  closedAt            DateTime?
+  winnerUserId        String?
+  /// The winner's (or second-chance bidder's) order.
+  orderId             String?                 @unique
+  sellerDecisionDueAt DateTime?
+  relistOfId          String?                 @unique
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  listing             Listing                 @relation(fields: [listingId], references: [id])
+  bids                Bid[]                   @relation("AuctionBids")
+  currentHighBid      Bid?                    @relation("AuctionHighBid", fields: [currentHighBidId], references: [id])
+  nonPayingStrikes    NonPayingBidderStrike[]
+  winner              User?                   @relation("AuctionWinner", fields: [winnerUserId], references: [id])
+  order               Order?                  @relation(fields: [orderId], references: [id])
+  relistOf            Auction?                @relation("AuctionRelist", fields: [relistOfId], references: [id])
+  relistedAs          Auction?                @relation("AuctionRelist")
+
+  @@index([listingId])
+  @@index([status, endsAt])
 }
 
 enum BidStatus {
@@ -484,40 +515,67 @@ enum BidStatus {
 }
 
 model Bid {
-  id            String         @id @default(cuid())
-  auctionId     String
-  bidderUserId  String
-  amountCents   Int
-  maxProxyCents Int?
-  placedAt      DateTime       @default(now())
-  ipHash        String?
-  deviceIdHash  String?
-  status        BidStatus      @default(ACTIVE)
-  auction       Auction        @relation("AuctionBids", fields: [auctionId], references: [id])
-  bidder        User           @relation(fields: [bidderUserId], references: [id])
-  highBidOf     Auction?       @relation("AuctionHighBid")
-  retraction    BidRetraction?
+  id               String         @id @default(cuid())
+  auctionId        String
+  bidderUserId     String
+  /// The auction's visible price right after this bid was placed.
+  amountCents      Int
+  /// The most the bidder will pay; proxy bidding raises their bid up to this.
+  maxProxyCents    Int
+  priceBeforeCents Int
+  placedAt         DateTime       @default(now())
+  ipHash           String?
+  deviceIdHash     String?
+  status           BidStatus      @default(ACTIVE)
+  auction          Auction        @relation("AuctionBids", fields: [auctionId], references: [id])
+  bidder           User           @relation(fields: [bidderUserId], references: [id])
+  highBidOf        Auction?       @relation("AuctionHighBid")
+  retraction       BidRetraction?
 
   @@index([auctionId, amountCents])
   @@index([bidderUserId, placedAt])
 }
 
+enum RetractionReason {
+  /// Obviously mistyped: at least 10x the price before the bid.
+  TYPO
+  DESCRIPTION_CHANGED
+  SELLER_UNREACHABLE
+}
+
+enum RetractionStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
 model BidRetraction {
-  id           String   @id @default(cuid())
-  bidId        String   @unique
-  reason       String
-  approvedById String?
-  createdAt    DateTime @default(now())
-  bid          Bid      @relation(fields: [bidId], references: [id])
+  id            String           @id @default(cuid())
+  bidId         String           @unique
+  kind          RetractionReason
+  /// The bidder's explanation.
+  reason        String
+  status        RetractionStatus @default(PENDING)
+  /// Null when approved automatically (self-serve typo).
+  approvedById  String?
+  decisionNotes String?
+  decidedAt     DateTime?
+  createdAt     DateTime         @default(now())
+  bid           Bid              @relation(fields: [bidId], references: [id])
+
+  @@index([status, createdAt])
 }
 
 model NonPayingBidderStrike {
   id        String   @id @default(cuid())
   userId    String
   auctionId String
+  orderId   String   @unique
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   auction   Auction  @relation(fields: [auctionId], references: [id])
+
+  @@index([userId, createdAt])
 }
 
 // ───────────────────────────── Orders, payments, ledger ─────────────────────────────
@@ -594,6 +652,7 @@ model Order {
   ledgerEntries    LedgerEntry[]
   referralEarnings ReferralEarning[]
   firstSaleOf      Referral?         @relation("ReferralFirstSale")
+  auction          Auction?
 
   @@index([buyerUserId])
   @@index([sellerUserId])

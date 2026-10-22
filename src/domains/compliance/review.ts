@@ -1,5 +1,7 @@
 import type { Db } from "@/lib/db";
 import { writeAuditEvent } from "@/domains/audit/audit";
+import { platform, type PlatformConfig } from "@/config/platform";
+import { cancelOpenAuction, startScheduledAuction } from "@/domains/auctions/lifecycle";
 import { awardBetaFounder } from "@/domains/growth/badges";
 import type { RequestContext } from "@/domains/identity/accounts";
 
@@ -9,7 +11,15 @@ export type DecideListingResult =
   | { ok: true; listingStatus: "LIVE" | "REJECTED" }
   | {
       ok: false;
-      reason: "NOT_STAFF" | "NOT_FOUND" | "ALREADY_DECIDED" | "SELF_REVIEW" | "NOTES_REQUIRED" | "SELLER_NOT_VERIFIED" | "AI_FLAG_NOTES_REQUIRED";
+      reason:
+        | "NOT_STAFF"
+        | "NOT_FOUND"
+        | "ALREADY_DECIDED"
+        | "SELF_REVIEW"
+        | "NOTES_REQUIRED"
+        | "SELLER_NOT_VERIFIED"
+        | "AI_FLAG_NOTES_REQUIRED"
+        | "AUCTIONS_DISABLED";
     };
 
 /** Approving over an AI red flag (possible remains, funerary, sacred, patrimony) needs a written reason. */
@@ -21,7 +31,7 @@ export const AI_FLAG_APPROVAL_NOTES_MIN = 20;
  * statement from a verified seller.
  */
 export async function decideListingReview(
-  deps: { db: Db; now?: () => Date },
+  deps: { db: Db; now?: () => Date; platform?: PlatformConfig },
   input: { reviewerId: string; reviewId: string; decision: ReviewDecision; notes: string },
   ctx: RequestContext = {},
 ): Promise<DecideListingResult> {
@@ -36,7 +46,7 @@ export async function decideListingReview(
     }
     const review = await tx.complianceReview.findUnique({
       where: { id: input.reviewId },
-      include: { listing: { select: { id: true, sellerUserId: true, status: true } } },
+      include: { listing: { select: { id: true, sellerUserId: true, status: true, format: true } } },
     });
     if (!review) return { ok: false, reason: "NOT_FOUND" } as const;
     if (review.status !== "OPEN" || review.listing.status !== "PENDING_REVIEW") {
@@ -45,6 +55,9 @@ export async function decideListingReview(
     if (review.listing.sellerUserId === input.reviewerId) return { ok: false, reason: "SELF_REVIEW" } as const;
 
     const approve = input.decision === "APPROVE";
+    if (approve && review.listing.format === "AUCTION" && !(deps.platform ?? platform).auctionsEnabled) {
+      return { ok: false, reason: "AUCTIONS_DISABLED" } as const;
+    }
     if (approve) {
       const verified = await tx.identityVerification.findFirst({
         where: { userId: review.listing.sellerUserId, status: "VERIFIED" },
@@ -77,6 +90,10 @@ export async function decideListingReview(
       where: { id: review.listing.id },
       data: { status: listingStatus, publishedAt: approve ? now : null },
     });
+    if (review.listing.format === "AUCTION") {
+      if (approve) await startScheduledAuction(tx, review.listing.id, now);
+      else await cancelOpenAuction(tx, review.listing.id, now);
+    }
     if (approve) await awardBetaFounder(tx, review.listing.sellerUserId, { now });
     await writeAuditEvent(tx, {
       actorUserId: input.reviewerId,

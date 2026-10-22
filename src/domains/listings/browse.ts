@@ -17,6 +17,7 @@ export async function browseListings(db: Db, query: BrowseQuery, config: Platfor
   const where: Prisma.ListingWhereInput = {
     status: "LIVE",
     storefront: { status: "ACTIVE" },
+    ...(config.auctionsEnabled ? {} : { format: "FIXED" as const }),
     category: {
       vertical: { in: config.enabledVerticals },
       ...(query.category ? { OR: [{ slug: query.category }, { parent: { slug: query.category } }] } : {}),
@@ -40,6 +41,7 @@ export async function browseListings(db: Db, query: BrowseQuery, config: Platfor
       include: {
         photos: { orderBy: { sortOrder: "asc" }, take: 1 },
         storefront: { select: { name: true } },
+        auctions: { where: { status: "LIVE" }, take: 1, select: { currentPriceCents: true, startingBidCents: true } },
       },
     }),
     db.listing.count({ where }),

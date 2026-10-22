@@ -14,6 +14,7 @@ describe("platform config", () => {
     expect(loadPlatformConfig({}).auctionsEnabled).toBe(false);
     expect(loadPlatformConfig({ AUCTIONS_ENABLED: "true" }).auctionsEnabled).toBe(true);
     expect(() => loadPlatformConfig({ AUCTIONS_ENABLED: "yes" })).toThrow();
+    expect(loadPlatformConfig({})).toMatchObject({ auctionSoftCloseMinutes: 2, auctionSellerDecisionDays: 3 });
   });
 
   it("enables antiques via config", () => {

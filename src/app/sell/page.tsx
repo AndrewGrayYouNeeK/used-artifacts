@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { feeRates } from "@/config/economics";
-import type { ListingStatus } from "@/generated/prisma/enums";
+import type { AuctionStatus, ListingStatus } from "@/generated/prisma/enums";
 import { checkIdentityGate } from "@/domains/identity/verification/verification";
 import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
 import { requireUser } from "@/lib/auth/dal";
@@ -12,6 +12,7 @@ import {
   startPayoutOnboardingAction,
 } from "@/app/actions/orders";
 import { changePriceAction, withdrawListingAction } from "@/app/actions/listings";
+import { sellerAuctionDecisionAction } from "@/app/actions/auctions";
 import { ActionForm, inputClass } from "@/components/action-form";
 import { UncertaintyBadge } from "@/components/uncertainty-badge";
 import { OrderStatusBadge } from "@/components/order-status";
@@ -36,6 +37,17 @@ const statusLabel: Record<ListingStatus, string> = {
   SOLD: "Sold",
   ENDED: "Ended",
   REMOVED: "Removed",
+};
+
+const auctionLabel: Record<AuctionStatus, string> = {
+  SCHEDULED: "starts when approved",
+  LIVE: "bidding open",
+  ENDED: "won, awaiting payment",
+  SETTLED: "paid",
+  UNSOLD: "ended unsold",
+  AWAITING_SELLER: "winner didn't pay: your decision",
+  RELISTED: "relisted",
+  CANCELLED: "cancelled",
 };
 
 async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell">["searchParams"] }) {
@@ -78,6 +90,7 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
     include: {
       complianceReviews: { orderBy: { createdAt: "desc" }, take: 1 },
       aiAnalyses: { orderBy: { createdAt: "desc" }, take: 1, select: { uncertainty: true, blocksPublishing: true } },
+      auctions: { orderBy: { createdAt: "desc" }, take: 1 },
     },
   });
   const rates = feeRates();
@@ -210,6 +223,7 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
               {listings.map((l) => {
                 const p = l.askingPriceCents === null ? null : priceBreakdown(l.askingPriceCents, rates);
                 const review = l.complianceReviews[0];
+                const auction = l.format === "AUCTION" ? l.auctions[0] : undefined;
                 return (
                   <tr key={l.id} className="align-top">
                     <td className="py-2 pr-4">
@@ -217,11 +231,43 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
                         {l.title}
                       </Link>
                     </td>
-                    <td className="py-2 pr-4">{p ? formatUsd(p.askingCents) : "-"}</td>
-                    <td className="py-2 pr-4">{p ? formatUsd(p.buyerPriceCents) : "-"}</td>
-                    <td className="py-2 pr-4">{p ? formatUsd(p.sellerPayoutCents) : "-"}</td>
+                    {auction ? (
+                      <td className="py-2 pr-4" colSpan={3}>
+                        Auction · {auction.bidCount} bid{auction.bidCount === 1 ? "" : "s"} ·{" "}
+                        {formatUsd(auction.currentPriceCents ?? auction.startingBidCents)}
+                        {auction.currentPriceCents === null ? " start" : " current"}
+                        {auction.reserveCents !== null && ` · reserve ${auction.reserveMet ? "met" : "not met"}`}
+                        {auction.endsAt && auction.status === "LIVE" && (
+                          <span className="block text-xs text-stone-500">Ends {auction.endsAt.toISOString().replace("T", " ").slice(0, 16)} UTC</span>
+                        )}
+                      </td>
+                    ) : (
+                      <>
+                        <td className="py-2 pr-4">{p ? formatUsd(p.askingCents) : "-"}</td>
+                        <td className="py-2 pr-4">{p ? formatUsd(p.buyerPriceCents) : "-"}</td>
+                        <td className="py-2 pr-4">{p ? formatUsd(p.sellerPayoutCents) : "-"}</td>
+                      </>
+                    )}
                     <td className="py-2">
                       {statusLabel[l.status]}
+                      {auction && <span className="mt-1 block text-xs text-stone-600">Auction {auctionLabel[auction.status]}</span>}
+                      {auction?.status === "AWAITING_SELLER" && (
+                        <div className="mt-2 space-y-2">
+                          <ActionForm action={sellerAuctionDecisionAction} submitLabel="Offer to next bidder" variant="secondary">
+                            <input type="hidden" name="auctionId" value={auction.id} />
+                            <input type="hidden" name="decision" value="SECOND_CHANCE" />
+                          </ActionForm>
+                          <ActionForm action={sellerAuctionDecisionAction} submitLabel="Relist" variant="secondary">
+                            <input type="hidden" name="auctionId" value={auction.id} />
+                            <input type="hidden" name="decision" value="RELIST" />
+                          </ActionForm>
+                          {auction.sellerDecisionDueAt && (
+                            <span className="block text-xs text-stone-500">
+                              Relists automatically on {auction.sellerDecisionDueAt.toISOString().slice(0, 10)}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {l.status === "REJECTED" && review?.notes && (
                         <span className="mt-1 block text-xs text-red-700">{review.notes}</span>
                       )}
@@ -237,16 +283,18 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
                         <details className="text-xs">
                           <summary className="cursor-pointer text-stone-600">Edit</summary>
                           <div className="mt-2 space-y-3">
-                            <ActionForm action={changePriceAction} submitLabel="Change price" variant="secondary">
-                              <input type="hidden" name="listingId" value={l.id} />
-                              <input
-                                name="askingPrice"
-                                required
-                                inputMode="decimal"
-                                defaultValue={p ? (p.askingCents / 100).toFixed(2) : ""}
-                                className={inputClass}
-                              />
-                            </ActionForm>
+                            {l.format === "FIXED" && (
+                              <ActionForm action={changePriceAction} submitLabel="Change price" variant="secondary">
+                                <input type="hidden" name="listingId" value={l.id} />
+                                <input
+                                  name="askingPrice"
+                                  required
+                                  inputMode="decimal"
+                                  defaultValue={p ? (p.askingCents / 100).toFixed(2) : ""}
+                                  className={inputClass}
+                                />
+                              </ActionForm>
+                            )}
                             <ActionForm
                               action={withdrawListingAction}
                               submitLabel="Withdraw listing"

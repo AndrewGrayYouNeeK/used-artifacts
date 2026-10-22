@@ -2,6 +2,7 @@ import type { EnforcementType, FraudSignalStatus, UserRole } from "@/generated/p
 import { writeAuditEvent, type Tx } from "@/domains/audit/audit";
 import type { IdentityDeps, RequestContext } from "@/domains/identity/accounts";
 import { recomputeVolumeBadges } from "@/domains/growth/badges";
+import { cancelOpenAuction } from "@/domains/auctions/lifecycle";
 import { forfeitUnpaidEarnings } from "@/domains/growth/referrals";
 import { recordListingOutcome } from "@/domains/listings/outcomes";
 import { DAY_MS } from "@/domains/orders/deps";
@@ -79,6 +80,7 @@ async function staffRole(tx: Tx, userId: string): Promise<UserRole | null> {
 async function removeListing(tx: Tx, listingId: string, now: Date) {
   const listing = await tx.listing.findUniqueOrThrow({ where: { id: listingId }, select: { status: true } });
   await tx.listing.update({ where: { id: listingId }, data: { status: "REMOVED" } });
+  await cancelOpenAuction(tx, listingId, now);
   await tx.complianceReview.updateMany({
     where: { listingId, status: "OPEN" },
     data: { status: "REJECTED", decision: "REMOVED", notes: "Removed by trust and safety", decidedAt: now },

@@ -20,6 +20,8 @@ const PlatformEnvSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  AUCTION_SOFT_CLOSE_MINUTES: z.coerce.number().int().min(0).max(60).default(2),
+  AUCTION_SELLER_DECISION_DAYS: z.coerce.number().int().min(1).max(14).default(3),
 });
 
 export interface PlatformConfig {
@@ -29,6 +31,10 @@ export interface PlatformConfig {
   /** Volume badges count at most this many sales to (or purchases from) the same person. */
   badgeMaxSalesPerCounterparty: number;
   auctionsEnabled: boolean;
+  /** A bid in the final N minutes pushes the end out to N minutes from the bid (anti-sniping). */
+  auctionSoftCloseMinutes: number;
+  /** After a winner fails to pay, the seller has this long to pick second chance or relist; then it relists automatically. */
+  auctionSellerDecisionDays: number;
 }
 
 export function loadPlatformConfig(
@@ -41,6 +47,8 @@ export function loadPlatformConfig(
     betaFounderLimit: parsed.BETA_FOUNDER_LIMIT,
     badgeMaxSalesPerCounterparty: parsed.BADGE_MAX_SALES_PER_COUNTERPARTY,
     auctionsEnabled: parsed.AUCTIONS_ENABLED,
+    auctionSoftCloseMinutes: parsed.AUCTION_SOFT_CLOSE_MINUTES,
+    auctionSellerDecisionDays: parsed.AUCTION_SELLER_DECISION_DAYS,
   };
 }
 

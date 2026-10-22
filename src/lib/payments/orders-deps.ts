@@ -4,6 +4,8 @@ import { db } from "@/lib/db";
 import { FakePaymentsProvider } from "@/domains/payments/fake-provider";
 import type { PaymentsProvider } from "@/domains/payments/provider";
 import { manualTracker, type OrdersDeps, type ShippingTracker } from "@/domains/orders/deps";
+import type { AuctionDeps } from "@/domains/auctions/auctions";
+import { getMailer } from "@/lib/email/mailer";
 import { EasyPostTracker } from "@/lib/shipping/easypost";
 import { StripeConnectProvider } from "./stripe-connect";
 
@@ -50,6 +52,10 @@ export function ordersDeps(): OrdersDeps {
     automaticTax: env.STRIPE_AUTOMATIC_TAX,
     tracker: shippingTracker(),
   };
+}
+
+export function auctionDeps(): AuctionDeps {
+  return { ...ordersDeps(), mailer: getMailer() };
 }
 
 export function usingFakePayments(): boolean {

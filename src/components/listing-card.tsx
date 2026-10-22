@@ -9,6 +9,8 @@ export interface ListingCardData {
   askingPriceCents: number | null;
   photos: { storageKey: string }[];
   storefront?: { name: string };
+  /** The live auction, for AUCTION listings (amounts are already buyer prices). */
+  auctions?: { currentPriceCents: number | null; startingBidCents: number }[];
 }
 
 /** Public card: shows only the buyer price (asking + buyer fee). */
@@ -29,6 +31,14 @@ export function ListingCard({ listing }: { listing: ListingCardData }) {
         <p className="line-clamp-2 font-medium group-hover:underline">{listing.title}</p>
         {listing.askingPriceCents !== null && (
           <p className="mt-1 font-semibold">{formatUsd(priceBreakdown(listing.askingPriceCents, feeRates()).buyerPriceCents)}</p>
+        )}
+        {listing.auctions?.[0] && (
+          <p className="mt-1 font-semibold">
+            {formatUsd(listing.auctions[0].currentPriceCents ?? listing.auctions[0].startingBidCents)}
+            <span className="ml-1 text-xs font-normal text-stone-500">
+              {listing.auctions[0].currentPriceCents === null ? "starting bid" : "current bid"}
+            </span>
+          </p>
         )}
         {listing.storefront && <p className="mt-1 text-xs text-stone-500">{listing.storefront.name}</p>}
       </div>

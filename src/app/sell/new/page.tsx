@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { feeRates } from "@/config/economics";
 import { platform } from "@/config/platform";
+import { AUCTION_DURATIONS_DAYS } from "@/domains/auctions/engine";
 import { IACA_DISCLOSURE } from "@/domains/compliance/provenance-template";
 import { checkIdentityGate } from "@/domains/identity/verification/verification";
 import { currentProvenanceTemplate } from "@/domains/listings/listings";
@@ -40,6 +41,8 @@ async function NewListing() {
   return (
     <ListingForm
       rates={feeRates()}
+      auctionsEnabled={platform.auctionsEnabled}
+      auctionDurations={AUCTION_DURATIONS_DAYS}
       legalName={gate.legalName}
       iacaDisclosure={IACA_DISCLOSURE}
       template={{

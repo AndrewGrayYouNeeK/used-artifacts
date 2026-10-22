@@ -584,3 +584,38 @@ Roadmap items 6 and 7.
 3. **Referrers who don't sell** have to set up a Stripe payout account through the selling flow to get paid. Tell us if you'd rather offer a payouts-only setup.
 4. **Counsel (L7):** the referral disclosure on the referrals page is marked DRAFT – PENDING LAWYER REVIEW (FTC endorsement wording and 1099 reporting).
 5. **Badge names and thresholds** are the seeded ones; change them any time in the `Badge` table.
+
+## 16. Phase 6: auctions (built, flag OFF)
+
+Roadmap item 3. Everything here is behind `AUCTIONS_ENABLED`, which stays **false** in every environment until counsel answers L1 (Kentucky auctioneer licensing). With the flag off, the listing form shows no auction option, the server refuses auction submissions and approvals (`AUCTIONS_DISABLED`), browse shows only fixed-price items, bidding is refused, and the auction jobs do nothing.
+
+**Format and pricing**
+- The seller picks fixed price or auction. An auction has a starting bid, an optional reserve (no reserve = `isNoReserve`, enforced by a DB CHECK), and a 3, 5, 7, or 10-day duration. The seller enters asking-price terms; bidders see buyer-price terms (asking + 10%), so the "no fee on top" rule holds. At close the winning price is split back: asking = price ÷ 1.10 (rounded down), buyer fee = the rest, seller fee = 10% of asking.
+- The auction starts when compliance approves the listing; rejection, withdrawal, staff removal, or a ban cancels it. Price changes are refused for auctions, and withdrawal is refused once bids exist.
+
+**Bidding**
+- **Proxy bids:** each bidder enters a maximum; the current price is the second-highest maximum plus one increment (eBay-style table, 50¢ under $10 up to $250 over $5,000), capped at the leader's maximum. Ties go to the earlier bid. When a maximum reaches the reserve, the price jumps to the reserve.
+- **Soft close:** a bid in the final 2 minutes (`AUCTION_SOFT_CLOSE_MINUTES`) extends the end to 2 minutes after that bid.
+- Bidders need a verified ID (`BID` gate). The seller, storefront members, and strongly linked accounts can't bid (`SELF_DEALING`, which also raises a shill signal). Bids are locked per auction (`SELECT … FOR UPDATE`) and the database refuses edits and deletes of bids.
+- Outbid bidders get an email. The listing page refreshes every 15 seconds (polling, not live push).
+- The public view shows aliases ("Bidder 1"), never the reserve amount or anyone's maximum.
+
+**Retractions**
+- A **typo** (the new maximum is at least 10× the price before it) is retracted immediately. "Description changed" and "seller unreachable" go to staff on Trust and safety. Nothing can be retracted in the final 12 hours, except a typo within a minute of placing it. Limit: 1 per 90 days (a pending request counts); 3 approved in a year raises a `RETRACTION_ABUSE` signal.
+
+**Close, payment, non-payment**
+- At the end the auction is **sold** (an order with the fee snapshot, payable within `AUCTION_PAYMENT_WINDOW_HOURS`) or **unsold** (no bids, or reserve not met). The winner pays from the listing or order page; payment goes into the same held-funds flow as fixed-price orders (Phase 2), and the auction becomes settled.
+- An unpaid winner gets a **non-paying bidder strike**. Two strikes in a year block bidding. The seller then has 3 days (`AUCTION_SELLER_DECISION_DAYS`) to offer a **second chance** to the next eligible bidder at that bidder's maximum, or **relist**; after that it relists automatically.
+
+**Shill detection**
+- Each bid is scored: weak link to the seller (+40), 70% or more of the bidder's 5+ recent bids on this seller (+30), bidding on 3+ of the seller's closed auctions without winning (+20), 2+ retractions (+10). At 50 a `SHILL` signal is raised; at 80 the bidder's bids are voided automatically. Staff can void bids from the signal, which records a `BID_VOID` enforcement action. The price is recomputed after any void.
+
+**Database guards:** one open auction per listing (partial unique index), CHECKs on auction terms and bid amounts, an auction status trigger (scheduled → live → ended/unsold → settled or awaiting seller → relisted; finished auctions are immutable), and append-only bids, retractions, and strikes.
+
+**Audit events:** `auction.bid_placed`, `auction.self_bid_blocked`, `auction.closed_sold`, `auction.closed_unsold`, `auction.winner_did_not_pay`, `auction.second_chance_offered`, `auction.relisted`, `auction.bid_retracted`, `auction.retraction_requested`, `auction.retraction_approved`, `auction.retraction_denied`, `auction.bids_voided`, `fraud.signal_created`. Auction start and cancellation are covered by the compliance and listing events that trigger them.
+
+**Needs Andrew's decision or action**
+1. **L1 (counsel):** whether hosting timed online auctions needs a Kentucky auctioneer license (KRS 330) or other state licenses. The flag stays off until then.
+2. **L8 (counsel):** enforceability of strikes, bid voiding, and fee forfeiture in the Terms of Service.
+3. **Auction parameters:** the increment table, the 2-minute soft close, 2 strikes per year, 1 retraction per 90 days, second-chance price (the runner-up's maximum), and automatic relisting after 3 days are proposals.
+4. **Live updates:** the listing refreshes every 15 seconds. Tell us if you want live push before auctions turn on.

@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
+import { payAuctionAction } from "@/app/actions/auctions";
 import { confirmReceiptAction, openDisputeAction } from "@/app/actions/orders";
 import { ActionForm, inputClass } from "@/components/action-form";
 import { OrderStatusBadge } from "@/components/order-status";
@@ -25,6 +27,7 @@ async function Order({
   params: PageProps<"/orders/[id]">["params"];
   searchParams: PageProps<"/orders/[id]">["searchParams"];
 }) {
+  await connection();
   const [{ id }, { paid }] = await Promise.all([params, searchParams]);
   const user = await requireUser();
   const order = await db.order.findUnique({
@@ -40,6 +43,8 @@ async function Order({
   const total = order.buyerPriceCents + order.shippingCents + order.taxCents;
   const canConfirm = order.status === "SHIPPED" || order.status === "DELIVERED";
   const canDispute = order.status === "PAID_HELD" || canConfirm;
+  const awaitingAuctionPayment =
+    order.status === "CREATED" && order.source !== "FIXED" && order.paymentDueAt !== null && order.paymentDueAt > new Date();
 
   return (
     <div className="space-y-6">
@@ -74,7 +79,7 @@ async function Order({
               <dd>{formatUsd(order.taxCents)}</dd>
             </>
           )}
-          <dt className="font-semibold">Total paid</dt>
+          <dt className="font-semibold">{order.status === "CREATED" ? "Total due" : "Total paid"}</dt>
           <dd className="font-semibold">{formatUsd(total)}</dd>
         </dl>
         {order.shipment && (
@@ -89,6 +94,23 @@ async function Order({
           </p>
         )}
       </section>
+
+      {awaitingAuctionPayment && (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 shadow-sm">
+          <h2 className="font-serif text-lg font-semibold text-emerald-950">
+            {order.source === "SECOND_CHANCE" ? "Second-chance offer" : "You won this auction"}
+          </h2>
+          <p className="mt-1 text-sm text-emerald-900">
+            Pay by {order.paymentDueAt!.toISOString().replace("T", " ").slice(0, 16)} UTC. Your payment is held until you
+            confirm the item arrived as described. Unpaid wins are recorded as a non-paying-bidder strike.
+          </p>
+          <div className="mt-4">
+            <ActionForm action={payAuctionAction} submitLabel="Pay now">
+              <input type="hidden" name="orderId" value={order.id} />
+            </ActionForm>
+          </div>
+        </section>
+      )}
 
       {canConfirm && (
         <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">

@@ -121,6 +121,7 @@ async function checkoutCompleted(
     shippingAddressHash: addressHash,
   });
   await tx.listing.update({ where: { id: order.listingId }, data: { status: "SOLD" } });
+  await tx.auction.updateMany({ where: { orderId: order.id, status: "ENDED" }, data: { status: "SETTLED" } });
 
   if (fingerprintHash) await linkByPaymentFingerprint(tx, order.buyerUserId, fingerprintHash);
   if (addressHash) await linkByShippingAddress(tx, order.buyerUserId, addressHash);

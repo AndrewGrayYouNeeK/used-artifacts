@@ -61,11 +61,17 @@ export async function createStorefrontAction(_prev: FormState, formData: FormDat
 
 export async function submitListingAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const user = await requireUser();
+  const isAuction = str(formData, "format") === "AUCTION";
+  const optional = (key: string) => str(formData, key).trim() || undefined;
   const parsed = ListingSubmissionSchema.safeParse({
     categoryId: str(formData, "categoryId"),
     title: str(formData, "title"),
     description: str(formData, "description"),
-    askingPrice: str(formData, "askingPrice"),
+    format: isAuction ? "AUCTION" : "FIXED",
+    askingPrice: isAuction ? undefined : str(formData, "askingPrice"),
+    startingBid: isAuction ? str(formData, "startingBid") : undefined,
+    reservePrice: isAuction ? optional("reservePrice") : undefined,
+    durationDays: isAuction ? Number(str(formData, "durationDays")) : undefined,
     shipping: str(formData, "shipping"),
     sellerConditionGrade: str(formData, "sellerConditionGrade"),
     regionOfOrigin: str(formData, "regionOfOrigin"),
@@ -172,6 +178,8 @@ export async function decideListingReviewAction(_prev: FormState, formData: Form
           status: "error",
           message: "The photo analyzer raised a red flag. Explain in the notes (20+ characters) why this item is allowed.",
         };
+      case "AUCTIONS_DISABLED":
+        return { status: "error", message: "Auctions are switched off, so this auction listing can't go live. Reject it so the seller can relist at a fixed price." };
       case "NOT_STAFF":
       case "NOT_FOUND":
       case "ALREADY_DECIDED":

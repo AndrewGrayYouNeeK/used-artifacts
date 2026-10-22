@@ -3,6 +3,8 @@ import type { Db } from "@/lib/db";
 import type { ComplianceReviewReason } from "@/generated/prisma/enums";
 import { canonicalJson, sha256Hex } from "@/lib/crypto";
 import { isVerticalEnabled, platform, type PlatformConfig } from "@/config/platform";
+import { economics, feeRates, type EconomicsConfig } from "@/config/economics";
+import { priceBreakdown } from "@/domains/pricing/pricing";
 import { writeAuditEvent } from "@/domains/audit/audit";
 import type { RequestContext } from "@/domains/identity/accounts";
 import { checkIdentityGate, type IdentityGate } from "@/domains/identity/verification/verification";
@@ -23,6 +25,7 @@ export interface ListingDeps {
   db: Db;
   now?: () => Date;
   platform?: PlatformConfig;
+  economics?: EconomicsConfig;
 }
 
 export interface SubmitListingDeps extends ListingDeps {
@@ -132,6 +135,8 @@ export async function submitListing(
   const now = clock(deps);
   const s = input.submission;
   if (input.photos.length === 0 || input.photos.length > MAX_PHOTOS) return { ok: false, reason: "PHOTOS_REQUIRED" };
+  const isAuction = s.format === "AUCTION";
+  if (isAuction && !config.auctionsEnabled) return { ok: false, reason: "AUCTIONS_DISABLED" };
 
   const gate = await checkIdentityGate(deps.db, input.userId, "SELL");
   if (!gate.ok) return { ok: false, reason: gate.reason };
@@ -216,9 +221,22 @@ export async function submitListing(
     screening: screening.review.map((m) => ({ field: m.field, pattern: m.pattern, matchedText: m.matchedText, reason: m.reason })),
     enhancedReviewCategory: category.requiresEnhancedReview,
     nativeAmerican: category.isNativeAmerican,
-    highValue: s.askingPrice >= config.highValueThresholdCents,
+    highValue: (isAuction ? (s.reservePrice ?? s.startingBid ?? 0) : (s.askingPrice ?? 0)) >= config.highValueThresholdCents,
     acquisitionSource: s.acquisitionSource,
   };
+
+  const econ = deps.economics ?? economics;
+  const toBuyerPrice = (askingCents: number) => priceBreakdown(askingCents, feeRates(econ)).buyerPriceCents;
+  const auctionTerms = isAuction
+    ? {
+        startingBidCents: toBuyerPrice(s.startingBid!),
+        reserveCents: s.reservePrice === undefined ? null : toBuyerPrice(s.reservePrice),
+        isNoReserve: s.reservePrice === undefined,
+        durationDays: s.durationDays!,
+        softCloseMinutes: config.auctionSoftCloseMinutes,
+        paymentWindowHours: econ.auctionPaymentWindowHours,
+      }
+    : null;
 
   return deps.db.$transaction(async (tx) => {
     const listing = await tx.listing.create({
@@ -232,8 +250,9 @@ export async function submitListing(
         regionOfOrigin: s.regionOfOrigin ?? null,
         estimatedAge: s.estimatedAge ?? null,
         materials: s.materials ?? null,
-        format: "FIXED",
-        askingPriceCents: s.askingPrice,
+        format: isAuction ? "AUCTION" : "FIXED",
+        askingPriceCents: isAuction ? null : s.askingPrice,
+        ...(auctionTerms ? { auctions: { create: auctionTerms } } : {}),
         shippingCents: s.shipping,
         status: "PENDING_REVIEW",
         photos: {
@@ -271,6 +290,9 @@ export async function submitListing(
       estimatedAge: listing.estimatedAge,
       materials: listing.materials,
       sellerConditionGrade: listing.sellerConditionGrade,
+      ...(auctionTerms
+        ? { format: "AUCTION", startingBidCents: auctionTerms.startingBidCents, reserveCents: auctionTerms.reserveCents, durationDays: auctionTerms.durationDays }
+        : {}),
     };
     const statementFields = {
       acquisitionSource: s.acquisitionSource,

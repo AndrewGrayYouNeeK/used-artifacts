@@ -45,6 +45,27 @@ export function priceBreakdown(askingCents: number, rates: FeeRates): PriceBreak
   };
 }
 
+/**
+ * The inverse of priceBreakdown, for auctions where bidders bid buyer prices:
+ * splits a winning bid into the asking amount and the buyer fee so the buyer
+ * pays exactly the bid. Rounding is absorbed by the buyer fee (at most 1 cent
+ * off applyBps), and the seller fee is computed on the asking amount as usual.
+ */
+export function splitBuyerPrice(buyerPriceCents: number, rates: FeeRates): PriceBreakdown {
+  assertCents(buyerPriceCents, "buyerPriceCents");
+  const askingCents = Math.floor((buyerPriceCents * 10_000) / (10_000 + rates.buyerFeeBps));
+  const buyerFeeCents = buyerPriceCents - askingCents;
+  const sellerFeeCents = applyBps(askingCents, rates.sellerFeeBps);
+  return {
+    askingCents,
+    buyerFeeCents,
+    buyerPriceCents,
+    sellerFeeCents,
+    sellerPayoutCents: askingCents - sellerFeeCents,
+    platformFeeCents: buyerFeeCents + sellerFeeCents,
+  };
+}
+
 export function formatUsd(cents: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 }

@@ -22,6 +22,9 @@ interface Props {
   iacaDisclosure: string;
   template: { version: number; isDraft: boolean; body: string; attestations: Attestation[] };
   categories: CategoryOption[];
+  /** AUCTIONS_ENABLED; the auction fields are not rendered while it is off. */
+  auctionsEnabled: boolean;
+  auctionDurations: readonly number[];
 }
 
 const ACQUISITION_SOURCES = [
@@ -104,9 +107,12 @@ function TextInput(props: {
   );
 }
 
-export function ListingForm({ rates, legalName, iacaDisclosure, template, categories }: Props) {
+export function ListingForm({ rates, legalName, iacaDisclosure, template, categories, auctionsEnabled, auctionDurations }: Props) {
   const [state, action, pending] = useActionState(submitListingAction, initial);
   const [askingInput, setAskingInput] = useState("");
+  const [format, setFormat] = useState<"FIXED" | "AUCTION">("FIXED");
+  const [startInput, setStartInput] = useState("");
+  const [reserveInput, setReserveInput] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [source, setSource] = useState("");
   const [shippingInput, setShippingInput] = useState("");
@@ -128,6 +134,11 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
   const nativeAmerican = category?.isNativeAmerican ?? false;
   const askingCents = parseUsdToCents(askingInput);
   const prices = askingCents !== null && askingCents > 0 ? priceBreakdown(askingCents, rates) : null;
+  const isAuction = auctionsEnabled && format === "AUCTION";
+  const startCents = parseUsdToCents(startInput);
+  const startPrices = startCents !== null && startCents > 0 ? priceBreakdown(startCents, rates) : null;
+  const reserveCents = parseUsdToCents(reserveInput);
+  const reservePrices = reserveCents !== null && reserveCents > 0 ? priceBreakdown(reserveCents, rates) : null;
   const pct = (bps: number) => `${bps / 100}%`;
 
   const availableFields = new Set<SuggestionField>(
@@ -176,8 +187,8 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
       <div>
         <h1 className="font-serif text-2xl font-semibold">New listing</h1>
         <p className="mt-1 text-sm text-stone-600">
-          Fixed-price only during the beta. Every listing is reviewed by our compliance team before
-          it goes live.
+          {auctionsEnabled ? "Fixed price or timed auction." : "Fixed-price only during the beta."} Every
+          listing is reviewed by our compliance team before it goes live.
         </p>
       </div>
 
@@ -285,34 +296,96 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
 
       <section className="space-y-4 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
         <h2 className="font-serif text-lg font-semibold">Price</h2>
-        <TextInput
-          label="Your asking price (USD)"
-          name="askingPrice"
-          required
-          inputMode="decimal"
-          placeholder="100.00"
-          value={askingInput}
-          onChange={setAskingInput}
-          errors={errors?.askingPrice}
-        />
-        <dl className="grid grid-cols-3 gap-3 text-sm" aria-live="polite">
-          <div className="rounded-xl bg-stone-50 p-4">
-            <dt className="text-xs text-stone-500">Your asking price</dt>
-            <dd className="mt-1 text-lg font-semibold">{prices ? formatUsd(prices.askingCents) : "—"}</dd>
+        {auctionsEnabled && (
+          <fieldset className="flex gap-4 text-sm">
+            <legend className="sr-only">Format</legend>
+            {(["FIXED", "AUCTION"] as const).map((f) => (
+              <label key={f} className="flex items-center gap-2">
+                <input type="radio" name="format" value={f} checked={format === f} onChange={() => setFormat(f)} />
+                {f === "FIXED" ? "Fixed price" : "Auction"}
+              </label>
+            ))}
+          </fieldset>
+        )}
+        {isAuction ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <TextInput
+                label="Starting bid (USD, your terms)"
+                name="startingBid"
+                required
+                inputMode="decimal"
+                placeholder="50.00"
+                value={startInput}
+                onChange={setStartInput}
+                errors={errors?.startingBid}
+              />
+              <TextInput
+                label="Reserve (optional)"
+                name="reservePrice"
+                inputMode="decimal"
+                placeholder="No reserve"
+                value={reserveInput}
+                onChange={setReserveInput}
+                hint="Hidden from bidders; they only see whether it's met."
+                errors={errors?.reservePrice}
+              />
+            </div>
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-stone-800">
+                Length<span className="text-red-700"> *</span>
+              </span>
+              <select name="durationDays" defaultValue="7" className={inputClass}>
+                {auctionDurations.map((d) => (
+                  <option key={d} value={d}>
+                    {d} days
+                  </option>
+                ))}
+              </select>
+              <Errors errors={errors?.durationDays} />
+            </label>
+            <p className="rounded-xl bg-stone-50 p-4 text-sm text-stone-700" aria-live="polite">
+              Bidding opens at {startPrices ? formatUsd(startPrices.buyerPriceCents) : "—"} (your starting bid +{" "}
+              {pct(rates.buyerFeeBps)} buyer fee, built in)
+              {reservePrices
+                ? `; your reserve is ${formatUsd(reservePrices.buyerPriceCents)} in bid terms`
+                : "; no reserve, so the highest bid wins"}
+              . You receive the winning bid minus the buyer fee and the {pct(rates.sellerFeeBps)} seller fee. A bid in
+              the final minutes extends the end time.
+            </p>
           </div>
-          <div className="rounded-xl bg-stone-50 p-4">
-            <dt className="text-xs text-stone-500">Buyers see and pay</dt>
-            <dd className="mt-1 text-lg font-semibold">{prices ? formatUsd(prices.buyerPriceCents) : "—"}</dd>
-            <dd className="mt-1 text-xs text-stone-500">Asking + {pct(rates.buyerFeeBps)} buyer fee, built in</dd>
-          </div>
-          <div className="rounded-xl bg-emerald-50 p-4">
-            <dt className="text-xs text-emerald-800">You receive</dt>
-            <dd className="mt-1 text-lg font-semibold text-emerald-900">
-              {prices ? formatUsd(prices.sellerPayoutCents) : "—"}
-            </dd>
-            <dd className="mt-1 text-xs text-emerald-800">Asking − {pct(rates.sellerFeeBps)} seller fee</dd>
-          </div>
-        </dl>
+        ) : (
+          <>
+          <TextInput
+            label="Your asking price (USD)"
+            name="askingPrice"
+            required
+            inputMode="decimal"
+            placeholder="100.00"
+            value={askingInput}
+            onChange={setAskingInput}
+            errors={errors?.askingPrice}
+          />
+          <dl className="grid grid-cols-3 gap-3 text-sm" aria-live="polite">
+            <div className="rounded-xl bg-stone-50 p-4">
+              <dt className="text-xs text-stone-500">Your asking price</dt>
+              <dd className="mt-1 text-lg font-semibold">{prices ? formatUsd(prices.askingCents) : "—"}</dd>
+            </div>
+            <div className="rounded-xl bg-stone-50 p-4">
+              <dt className="text-xs text-stone-500">Buyers see and pay</dt>
+              <dd className="mt-1 text-lg font-semibold">{prices ? formatUsd(prices.buyerPriceCents) : "—"}</dd>
+              <dd className="mt-1 text-xs text-stone-500">Asking + {pct(rates.buyerFeeBps)} buyer fee, built in</dd>
+            </div>
+            <div className="rounded-xl bg-emerald-50 p-4">
+              <dt className="text-xs text-emerald-800">You receive</dt>
+              <dd className="mt-1 text-lg font-semibold text-emerald-900">
+                {prices ? formatUsd(prices.sellerPayoutCents) : "—"}
+              </dd>
+              <dd className="mt-1 text-xs text-emerald-800">Asking − {pct(rates.sellerFeeBps)} seller fee</dd>
+            </div>
+          </dl>
+          </>
+        )}
         <TextInput
           label="US shipping you charge (USD)"
           name="shipping"
