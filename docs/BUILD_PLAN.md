@@ -1,6 +1,6 @@
 # Used Artifacts — Build Plan
 
-Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phase 0 implementation is in progress. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
+Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phase 0 is done; Phase 1 (identity and compliance core) is built, see section 11. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
 
 ---
 
@@ -412,7 +412,7 @@ The brand is built on accuracy, not on having a lab on day one.
 
 ---
 
-## 10. Phase 0 scope (in progress)
+## 10. Phase 0 scope (done)
 
 Built on the same branch and PR as this plan:
 
@@ -426,3 +426,44 @@ Built on the same branch and PR as this plan:
 - The Proprietor singleton table and its triggers, the `proprietor:assign` script, and the `<UserIdentity>` component.
 - `ENABLED_VERTICALS` and the category `vertical` field, with the artifact category tree seeded.
 - A GitHub Actions workflow that runs typecheck, lint, tests, and build.
+
+## 11. Phase 1: identity verification and provenance (built)
+
+Roadmap item 2. Auctions stay disabled (`AUCTIONS_ENABLED=false`).
+
+**Identity (Stripe Identity, required to sell or bid; not to browse or buy at fixed price, B4)**
+- Consent notice (biometric, draft pending lawyer review) and checkbox before any session starts; consent version and time are stored. Each user gets at most 5 paid attempts.
+- Stripe session: government ID (license, passport, ID card), live capture, matching selfie. Results arrive by signed webhook (`/api/webhooks/stripe-identity`); every event id is stored so retries are processed once.
+- We store the status, legal name, birth year, document type and country. We never store ID images, the selfie, or the document number.
+- **One identity per account:** a keyed HMAC of country + document number + date of birth is a unique column. A document already on another account is `DUPLICATE_REJECTED`, the two accounts are linked (`SAME_ID_HASH_ATTEMPT`), and a fraud signal is raised. Concurrent attempts are serialized per fingerprint, so two accounts racing with one ID can't both pass.
+- **Same person, different document:** a second keyed HMAC of normalized legal name + full date of birth. A match with another account puts the verification in `NEEDS_REVIEW` (linked as `SAME_PERSON_DETAILS`) for staff to approve or reject with notes. Nobody can review their own.
+- `checkIdentityGate(userId, "SELL" | "BID")` guards storefront creation and listing submission; `BID` also requires `AUCTIONS_ENABLED`.
+- Dev and tests use a simulated provider; production refuses it.
+
+**Sworn provenance statement (template v2, marked "DRAFT – PENDING LAWYER REVIEW")**
+- Six attestations: not from national forest, park, BLM, other federal, state or local public, or tribal land (ARPA); lawful private-land finds with permission; not human remains, funerary or sacred objects, or cultural patrimony, and not from a grave or burial (NAGPRA); no unverified Indian-made claim (IACA); legal title; truthfulness and penalties.
+- All attestations are required, plus acquisition source, details, and (for private land) the landowner's name and state. The typed signature must match the verified legal name.
+- The statement stores a frozen snapshot of the listing and a SHA-256 signature hash over template, snapshot, answers, signer, and time. The database refuses edits or deletes of statements and edits of template wording (new wording = new version). A template can only stop being a draft when an approver is recorded.
+
+**Native American artifact rules**
+- Categories flagged Native American require region of origin, estimated age, materials, acquisition state and year, and acknowledgement of the IACA disclosure, which is also shown on the public listing.
+- Screening runs on all listing text. **Blocked outright** (no listing is created, and the attempt is audited): human remains, funerary objects and grave goods, items from graves, burials or mounds, sacred objects, medicine bundles, cultural patrimony, Indian-made / Native American-made claims, and eagle parts (Bald and Golden Eagle Protection Act). **Flagged for review:** ceremonial, effigy, kachina/katsina, burial, bone, skull, mentions of federal, state or tribal land, and excavation wording. The baseline list lives in code and is seeded into `ProhibitedTerm`; staff can add terms or tighten one to BLOCK, but never loosen a baseline block.
+
+**Compliance review (100% of beta listings)**
+- Every submission is `PENDING_REVIEW` with a `ComplianceReview` (reason KEYWORD, CATEGORY, or BETA_FULL_REVIEW, plus flags). Staff approve (LIVE) or reject (with notes shown to the seller) at `/admin/compliance`. Sellers can't review their own listings.
+- The database refuses to set a listing LIVE unless it has a signed statement from the seller and the seller is currently `VERIFIED`.
+
+**Pricing in the listing form:** the seller enters the asking price and sees the buyer price (asking + 10%) and their payout (asking − 10%) live. Public pages show only the buyer price.
+
+**Audit events:** `identity.verification_started`, `.processing`, `.requires_input`, `.canceled`, `.verified`, `.needs_review`, `.duplicate_rejected`, `.review_approved`, `.review_rejected`, `.webhook_unknown_session`, `fraud.signal_created`, `storefront.created`, `listing.submitted`, `listing.submission_blocked`, `provenance.signed`, `compliance.review_opened`, `compliance.listing_approved`, `compliance.listing_rejected`.
+
+**Needs Andrew's decision or action**
+1. **Referral basis:** "5% of the sale" on the buyer price ($5.50 per $100 asking, the default) or the asking price ($5.00)? (`REFERRAL_BASIS`, section 0.2.)
+2. **Shipping and sales tax** shown separately at checkout. Is that consistent with "no fee on top of the shown price"?
+3. **Stripe processing fees** (about $3.49 on a $110 charge) currently come out of the platform's take.
+4. **Stripe Identity setup:** a restricted key with sensitive verification-result access (Stripe must approve it, because duplicate detection needs the document number), the webhook endpoint and secret, and `IDENTITY_FINGERPRINT_SECRET`. Stripe bills per verification; the 5-attempt cap limits cost.
+5. **Lawyer review** of the provenance wording, the consent notice (BIPA and similar state laws, L11), and the IACA disclosure. Approved wording ships as template v3 with `approvedBy` set.
+6. **Self-review:** a seller can't approve their own listing, so Andrew's own listings need a second staff account (a MODERATOR).
+7. **Pre-1979 acquisitions:** ARPA covers removals after October 31, 1979. Should older acquisitions get different treatment or documentation (L2)?
+8. **Landowner permission documents:** the schema has `landownerPermissionDocKey`; uploads arrive with photo storage in Phase 2. Should they be mandatory for private-land finds?
+9. **Screening list:** review the BLOCK vs REVIEW split in `src/domains/compliance/prohibited-terms.ts` with counsel.
