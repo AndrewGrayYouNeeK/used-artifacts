@@ -1,6 +1,60 @@
 # Used Artifacts — Build Plan
 
-Status: **DRAFT, awaiting owner approval.** No application code has been written yet. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
+Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phase 0 implementation is in progress. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
+
+---
+
+## 0. Owner decisions (2026-10-22)
+
+| # | Decision |
+|---|---|
+| B1 | **Multi-tenant** means each seller gets their own storefront under the Used Artifacts brand. White-label sub-marketplaces are out of scope. |
+| B2 | **Referral payouts are a share of the SALE PRICE**, paid from the platform's cut: 10% on a recruit's first sale, then 5% on every later sale for as long as the recruit sells (it never ends). |
+| B3 | **One paid tier** at $20/month. It lowers the seller fee from 10% to 5%. |
+| B4 | **Buyers need ID verification only to bid or sell.** Browsing and fixed-price buying do not require it. |
+| B5 | A cosmetic **"Beta Founder" badge** is allowed. It has no effect on fees or ranking and is kept separate from volume badges. |
+| B6 | **Scope is artifacts and antiques.** The category tree covers both. Native American and archaeological categories keep the enhanced review rules. |
+| B7 | **US-only shipping** at launch. |
+| B8 | **3-day hold after delivery** before auto-release. **48-hour payment window** for auction winners. |
+| — | Unchanged: auctions stay off until the Kentucky licensing question (L1) is answered, paid tiers launch after the beta, and grading comes last. |
+
+### 0.1 Configuration values
+
+All of these numbers are config values, not hard-coded. In Phase 0 they live in `src/config/economics.ts` and can be overridden through environment variables. A later phase moves them to an owner-editable, audited settings table.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `PLATFORM_FEE_BPS_FREE` | 1000 (10%) | Seller fee on the free tier |
+| `PLATFORM_FEE_BPS_PAID` | 500 (5%) | Seller fee on the paid tier |
+| `PAID_TIER_PRICE_CENTS` | 2000 ($20/month) | Paid tier price |
+| `REFERRAL_FIRST_SALE_BPS` | 1000 (10% of sale price) | Referrer's share of the recruit's first sale |
+| `REFERRAL_ONGOING_BPS` | 500 (5% of sale price) | Referrer's share of the recruit's later sales, with no end date |
+| `REFERRAL_CAP_AT_PLATFORM_FEE` | `true` | If true, a referral payout can never exceed the fee the platform actually collected on that order (see 0.2) |
+| `ESCROW_AUTO_RELEASE_DAYS` | 3 | Days after carrier-confirmed delivery before funds auto-release |
+| `AUCTION_PAYMENT_WINDOW_HOURS` | 48 | Time an auction winner has to pay |
+
+(bps = basis points; 100 bps = 1%.)
+
+### 0.2 Referral economics: for Andrew to review
+
+With the numbers above, the platform's net take on a referred seller's sales is as follows. All figures are percentages of the sale price, before Stripe processing fees.
+
+| Seller | Sale | Platform fee | Referral payout | **Platform nets** |
+|---|---|---|---|---|
+| Free tier | Recruit's first sale | 10% | 10% | **0%** |
+| Free tier | Later sales | 10% | 5% | 5% |
+| Paid tier | Recruit's first sale | 5% | 10%, capped to 5% | **0%**. Without the cap the platform would net **−5%** |
+| Paid tier | Later sales | 5% | 5% | **0%**, forever |
+
+- **The platform nets 0% on every referred seller's first sale.**
+- **The platform nets 0% on all ongoing sales by a referred seller on the paid tier** (5% fee minus 5% referral). That seller's only revenue to the platform is the $20/month subscription.
+- **Stripe processing fees** (about 2.9% + 30¢ per card charge) are paid by the platform out of its fee, so a "0% net" row is actually a **loss of roughly 3% per order**. Possible fixes are to pass processing fees to the buyer or seller, or to compute referrals on the fee net of processing costs.
+- The paid-tier first sale is the one case where the referral is larger than the fee. Because payouts come "from the platform's cut", the plan caps the payout at the fee collected (`REFERRAL_CAP_AT_PLATFORM_FEE=true`). Andrew can turn the cap off if he prefers to pay the full 10% from other revenue.
+- Since ongoing referrals never end, the referral liability grows with every referred seller. The ledger tracks it in a separate `referral_payable` account so it is visible on the GM dashboard.
+
+### 0.3 Supabase note
+
+The plan uses **Auth.js**, not Supabase Auth, and Phase 0 is built that way. Supabase may still host Postgres. **If Supabase Auth is ever adopted**, Andrew must set the **Site URL** and the **redirect allow-list** by hand in the Supabase dashboard under **Authentication > URL configuration**. Otherwise verification and password-reset links will point to the wrong host or be rejected.
 
 Repo state when this was written: one commit with only `README.md` ("marketplace for preloved goods with founders badge program"). Nothing exists yet to migrate or stay compatible with.
 
@@ -80,9 +134,9 @@ Repo state when this was written: one commit with only `README.md` ("marketplace
 - `admin`: the GM dashboard, moderation queues, the audit log viewer.
 - `audit`: the append-only event writer, used by every other module.
 
-### 3.2 What "multi-tenant" means here (needs owner confirmation)
+### 3.2 What "multi-tenant" means here (confirmed, B1)
 
-Proposed interpretation: **multi-vendor marketplace**. Every seller gets a **Storefront** (tenant) with its own branding, policies, payout account, and optional staff members. Buyers shop across all storefronts. Tenant isolation is enforced in the domain-service layer: every query is scoped by `storefrontId` for seller and staff actions, and Postgres row-level security can be added later as a second layer. The schema leaves room for the alternative meaning (white-label sub-marketplaces) but does not build it. See the open questions.
+It is a **multi-vendor marketplace**. Every seller gets a **Storefront** (tenant) under the Used Artifacts brand, with its own name, policies, payout account, and optional staff members. Buyers shop across all storefronts. Tenant isolation is enforced in the domain-service layer: every query is scoped by `storefrontId` for seller and staff actions, and Postgres row-level security can be added later as a second layer. White-label sub-marketplaces are out of scope.
 
 ### 3.3 Order and escrow state machine (roadmap item 4)
 
@@ -174,7 +228,7 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 - **MembershipTier**: `id, name (FREE|PLUS|PRO…), monthlyPriceCents, feeRateBps, featuredListingCredits, analyticsEnabled, earlyAccess`. Constraint: tiers contain **no** referral or recruiting multipliers. This is enforced by having no such column.
 - **Membership**: `userId, tierId, stripeSubscriptionId, status, currentPeriodEnd`
 - **Referral**: `id, referrerUserId, refereeUserId (unique), code, createdAt, firstSaleOrderId?`
-- **ReferralEarning**: `referralId, orderId (unique per referral), kind (FIRST_SALE|ONGOING), rateBps, basisCents (= platform fee actually collected), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
+- **ReferralEarning**: `referralId, orderId (unique per referral), kind (FIRST_SALE|ONGOING), rateBps, basisCents (= sale price per B2), platformFeeCents, cappedAtFee (bool), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. `amountCents = basisCents × rateBps`, capped at `platformFeeCents` when `REFERRAL_CAP_AT_PLATFORM_FEE` is on. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
 - **Badge**: `id, code, name, criteria (json: e.g. {completedSalesCount ≥ 10} or {gmvCents ≥ X})`
 - **UserBadge**: `userId, badgeId, awardedAt, revokedAt?, basisSnapshot`. It is recomputed only from released orders that the fraud checks did not flag.
 
@@ -211,7 +265,7 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 ### 5.2 One identity per account
 
 - `IdentityVerification.documentFingerprintHash` is unique. A second account presenting the same document is blocked and an `AccountLink(SAME_ID_HASH_ATTEMPT)` is recorded.
-- Verification is required to **sell**, to **bid**, and to be paid referral earnings. It is optional for simple fixed-price buying in v1 (to be decided; see open questions).
+- Verification is required to **sell**, to **bid**, and to be paid referral earnings. It is **not** required to browse or to buy at a fixed price (B4). Self-buy blocking for unverified buyers relies on the device, payment, and address linkage signals.
 
 ### 5.3 Self-buying, self-reselling, circle trading, shill bidding
 
@@ -297,7 +351,7 @@ Notes:
 - **L10. Marketplace facilitator sales tax** registration triggers, and whether Stripe Tax coverage is enough.
 - **L11. Privacy.** Biometric data from selfie verification (Illinois BIPA, Texas, Washington). Use of seller photos to improve AI models.
 
-**Business and product (owner decisions):**
+**Business and product.** Answered on 2026-10-22; see section 0. The original questions are kept here for the record.
 
 - **B1.** Confirm the meaning of "multi-tenant": multi-vendor storefronts (proposed) or white-label sub-marketplaces?
 - **B2. Referral math.** Is it "10% / 5% **of the platform fee**" (proposed: the referrer earns 10% of the 10% fee on the first sale, i.e. 1% of the sale, then 5% of the fee) or "10% / 5% **of the sale price**" (which would consume the platform's entire fee on the first sale)? Does "ongoing" last forever or have a cap (for example 12 months)? When a paid tier lowers the fee, is the referral computed on the reduced fee? (Proposed: yes, on the fee actually collected.)
@@ -310,6 +364,15 @@ Notes:
 
 ---
 
-## 10. Next step
+## 10. Phase 0 scope (in progress)
 
-On approval (and answers to B1–B4 at minimum), implementation starts with **Phase 0** on a new branch: Next.js/TypeScript scaffold, Prisma schema for all entities above (grading included), auth with the secure reset flow, the audit log, and CI.
+Built on the same branch and PR as this plan:
+
+- Next.js (App Router) + TypeScript scaffold, with ESLint and Vitest.
+- Prisma schema for all entities above, grading included, with an initial migration.
+- `src/config/economics.ts`: the config values from section 0.1, plus pure fee and referral calculators with unit tests.
+- Auth.js credentials login with argon2id password hashes and email verification.
+- Secure password reset: a single-use hashed token sent to the verified email, a 30-minute TTL, all sessions revoked after reset, and no admin path that sets a password.
+- An append-only, hash-chained audit log writer, used by every auth event.
+- An owner role, and a minimal `/admin` page that is reachable only by the owner.
+- A GitHub Actions workflow that runs typecheck, lint, tests, and build.
