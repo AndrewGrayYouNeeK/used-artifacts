@@ -58,7 +58,7 @@ With the numbers above, the platform's net take on a referred seller's sales is 
 
 ### 0.3 Supabase note
 
-The plan uses **Auth.js**, not Supabase Auth, and Phase 0 is built that way. Supabase may still host Postgres. **If Supabase Auth is ever adopted**, Andrew must set the **Site URL** and the **redirect allow-list** by hand in the Supabase dashboard under **Authentication > URL configuration**. Otherwise verification and password-reset links will point to the wrong host or be rejected.
+The plan uses its own database-backed sessions (see the Auth row in section 2), not Supabase Auth, and Phase 0 is built that way. Supabase may still host Postgres. **If Supabase Auth is ever adopted**, Andrew must set the **Site URL** and the **redirect allow-list** by hand in the Supabase dashboard under **Authentication > URL configuration**. Otherwise verification and password-reset links will point to the wrong host or be rejected.
 
 Repo state when this was written: one commit with only `README.md` ("marketplace for preloved goods with founders badge program"). Nothing exists yet to migrate or stay compatible with.
 
@@ -85,7 +85,7 @@ Repo state when this was written: one commit with only `README.md` ("marketplace
 | ORM | **Prisma** | Typed schema and migrations. For hot paths that need `SELECT … FOR UPDATE` (bid placement, ledger posting), drop to raw SQL through `prisma.$queryRaw`. |
 | Payments | **Stripe Connect (Express accounts)** using *separate charges and transfers* | The platform charges the buyer, holds the funds, and only transfers to the seller's connected account after delivery is confirmed. Stripe handles seller KYC, 1099-K forms, and payouts, so the platform never acts as a money transmitter itself. |
 | Identity verification | **Stripe Identity** (alternatives: Persona, Veriff) | Document check plus selfie. It is in the same vendor relationship as payments, and it returns stable document attributes we can hash to enforce one identity per account. |
-| Auth | **Auth.js (NextAuth) with a custom credentials flow**, plus passkeys/TOTP later | We need full control over the password-reset flow (roadmap item 10), so a hosted provider that lets admins set passwords is a poor fit. Passwords hashed with argon2id. |
+| Auth | **In-house email + password auth with database sessions** (changed from Auth.js during Phase 0). Passkeys/TOTP later | We need full control over the password-reset flow (roadmap item 10), so a hosted provider that lets admins set passwords is a poor fit. Auth.js's credentials provider only supports stateless JWT sessions, which can't be revoked, but a password reset must sign out every device. So the session cookie holds a random token, and only its SHA-256 hash is stored in `Session`. Passwords are hashed with argon2id. |
 | Background jobs | **pg-boss** (Postgres-backed queue) on a long-running worker. Alternative: Inngest | Auction closes, payment-window expiries, escrow auto-release timers, fraud scans, and AI jobs all need durable, exactly-once-ish scheduling. Keeping the queue in Postgres means no extra infrastructure. |
 | Realtime (auctions) | **Server-Sent Events** from the worker/app, fanned out via Postgres `LISTEN/NOTIFY`. Upgrade path: Ably or Pusher | Live bid updates without managing WebSocket infrastructure at beta scale. |
 | File storage | **Cloudflare R2** or **S3**, with signed uploads | Listing photos, provenance documents, and grading images. Private bucket for ID and provenance documents. |
@@ -310,7 +310,7 @@ This data supports "what sells and what doesn't" analysis, and the Stage 2 rubri
 
 | Phase | Theme | Roadmap sections | Exit criteria |
 |---|---|---|---|
-| **0** | Foundations | 1 (skeleton), 10 (audit, auth) | Repo scaffold, CI, DB, Auth.js credentials auth with email verification, **secure password reset**, `AuditEvent` writer, owner role, deploys to staging. |
+| **0** | Foundations | 1 (skeleton), 10 (audit, auth) | Repo scaffold, CI, DB, email + password auth with database sessions and email verification, **secure password reset**, `AuditEvent` writer, owner role, deploys to staging. |
 | **1** | Identity and compliance core | 2 | Stripe Identity flow, one-identity uniqueness, provenance statement templates and signing, prohibited-item rules, compliance review queue, account-linkage signals collected at login and checkout. |
 | **2** | Storefronts, listings, fixed-price checkout with escrow | 1, 4 | Storefront onboarding (Stripe Connect Express), listing CRUD with photos, search and browse, checkout, the order state machine, shipping and tracking, buyer confirmation and auto-release, disputes, ledger, self-buy block. |
 | **3** | AI photo analyzer | 8 | Vision adapter, analysis job, guardrail post-processor, seller accept/reject UI, auto-routing of flagged items to compliance. |
@@ -421,8 +421,10 @@ Built on the same branch and PR as this plan:
 - Next.js (App Router) + TypeScript scaffold, with ESLint and Vitest.
 - Prisma schema for all entities above, grading included, with an initial migration.
 - `src/config/economics.ts`: the config values from section 0.1, plus pure fee and referral calculators with unit tests.
-- Auth.js credentials login with argon2id password hashes and email verification.
+- Email + password login with argon2id hashes, revocable database sessions, and email verification. Verification and reset links open a page with a confirm button, so email link scanners can't use up the single-use token.
 - Secure password reset: a single-use hashed token sent to the verified email, a 30-minute TTL, all sessions revoked after reset, and no admin path that sets a password.
 - An append-only, hash-chained audit log writer, used by every auth event.
-- An owner role, and a minimal `/admin` page that is reachable only by the owner.
+- An owner role, and a minimal `/admin` page that is reachable only by the owner. It shows the owner's profile with the Proprietor badge.
+- The Proprietor singleton table and its triggers, the `proprietor:assign` script, and the `<UserIdentity>` component.
+- `ENABLED_VERTICALS` and the category `vertical` field, with the artifact category tree seeded.
 - A GitHub Actions workflow that runs typecheck, lint, tests, and build.

@@ -1,0 +1,1073 @@
+// Used Artifacts data model. See docs/BUILD_PLAN.md section 4.
+// Money is always integer cents; rates are basis points (100 bps = 1%).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Identity & tenancy ─────────────────────────────
+
+enum UserRole {
+  USER
+  MODERATOR
+  OWNER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id              String     @id @default(cuid())
+  /// Always stored lowercased and trimmed.
+  email           String     @unique
+  emailVerifiedAt DateTime?
+  passwordHash    String
+  displayName     String
+  role            UserRole   @default(USER)
+  status          UserStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  sessions                Session[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  identityVerification    IdentityVerification?
+  loginEvents             LoginEvent[]
+  proprietor              Proprietor?
+
+  ownedStorefronts      Storefront[]        @relation("StorefrontOwner")
+  storefrontMemberships StorefrontMember[]
+  listings              Listing[]           @relation("ListingSeller")
+  provenanceStatements  ProvenanceStatement[]
+  complianceReviews     ComplianceReview[]  @relation("ComplianceReviewer")
+  bids                  Bid[]
+  nonPayingStrikes      NonPayingBidderStrike[]
+  purchases             Order[]             @relation("OrderBuyer")
+  sales                 Order[]             @relation("OrderSeller")
+  disputesOpened        Dispute[]           @relation("DisputeOpener")
+  linksA                AccountLink[]       @relation("AccountLinkA")
+  linksB                AccountLink[]       @relation("AccountLinkB")
+  enforcementActions    EnforcementAction[] @relation("EnforcementSubject")
+  enforcementsTaken     EnforcementAction[] @relation("EnforcementActor")
+  membership            Membership?
+  referralsMade         Referral[]          @relation("Referrer")
+  referredBy            Referral?           @relation("Referee")
+  badges                UserBadge[]
+  gradingSubmissions    GradingSubmission[]
+  gradingResultsGraded  GradingResult[]     @relation("InHouseGrader")
+  auditEvents           AuditEvent[]
+}
+
+/// Opaque session token lives in an httpOnly cookie; only its SHA-256 hash is stored.
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  ipHash     String?
+  userAgent  String?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  userId      String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  requestedIp String?
+  /// Set when the owner triggered the email from the GM dashboard (still delivered only to the user).
+  requestedByUserId String?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum IdentityVerificationStatus {
+  PENDING
+  REQUIRES_INPUT
+  VERIFIED
+  FAILED
+}
+
+model IdentityVerification {
+  id                      String                     @id @default(cuid())
+  userId                  String                     @unique
+  provider                String
+  providerSessionId       String                     @unique
+  status                  IdentityVerificationStatus @default(PENDING)
+  verifiedAt              DateTime?
+  legalName               String?
+  dobYear                 Int?
+  /// Keyed HMAC of document number + country + DOB. Unique => one identity per account.
+  documentFingerprintHash String?                    @unique
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  user                    User                       @relation(fields: [userId], references: [id])
+}
+
+model LoginEvent {
+  id           String   @id @default(cuid())
+  userId       String
+  succeeded    Boolean
+  ipHash       String?
+  uaHash       String?
+  deviceIdHash String?
+  at           DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, at])
+  @@index([deviceIdHash])
+  @@index([ipHash])
+}
+
+/// Singleton holder of the Proprietor badge. CHECK (id = 1) plus triggers in the
+/// migration make it impossible to hold more than one row, to re-point it, or to
+/// delete it. See BUILD_PLAN.md section 4.6a.
+model Proprietor {
+  id         Int      @id @default(1)
+  userId     String   @unique
+  assignedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+enum StorefrontStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum StorefrontMemberRole {
+  OWNER
+  STAFF
+}
+
+model Storefront {
+  id              String           @id @default(cuid())
+  slug            String           @unique
+  name            String
+  ownerUserId     String
+  stripeAccountId String?          @unique
+  payoutsEnabled  Boolean          @default(false)
+  status          StorefrontStatus @default(ACTIVE)
+  policies        Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  owner           User             @relation("StorefrontOwner", fields: [ownerUserId], references: [id])
+  members         StorefrontMember[]
+  listings        Listing[]
+  orders          Order[]
+}
+
+model StorefrontMember {
+  storefrontId String
+  userId       String
+  role         StorefrontMemberRole
+  createdAt    DateTime             @default(now())
+  storefront   Storefront           @relation(fields: [storefrontId], references: [id], onDelete: Cascade)
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([storefrontId, userId])
+}
+
+// ───────────────────────────── Catalog & compliance ─────────────────────────────
+
+enum Vertical {
+  ARTIFACT
+  ANTIQUE
+}
+
+model Category {
+  id                     String          @id @default(cuid())
+  parentId               String?
+  name                   String
+  slug                   String          @unique
+  /// Visibility is controlled by the ENABLED_VERTICALS config value.
+  vertical               Vertical
+  isNativeAmerican       Boolean         @default(false)
+  requiresEnhancedReview Boolean         @default(false)
+  sortOrder              Int             @default(0)
+  parent                 Category?       @relation("CategoryTree", fields: [parentId], references: [id])
+  children               Category[]      @relation("CategoryTree")
+  listings               Listing[]
+  rubrics                GradingRubric[]
+  feeSchedules           GradingFeeSchedule[]
+  gradingSubmissions     GradingSubmission[]
+  listingOutcomes        ListingOutcome[]
+
+  @@index([vertical])
+}
+
+enum ListingFormat {
+  FIXED
+  AUCTION
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  LIVE
+  SOLD
+  ENDED
+  REMOVED
+}
+
+model Listing {
+  id                   String        @id @default(cuid())
+  storefrontId         String
+  sellerUserId         String
+  categoryId           String
+  title                String
+  description          String
+  /// Seller's self-reported condition; compared later against partner grades.
+  sellerConditionGrade String?
+  format               ListingFormat
+  priceCents           Int?
+  status               ListingStatus @default(DRAFT)
+  featuredUntil        DateTime?
+  publishedAt          DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  storefront           Storefront            @relation(fields: [storefrontId], references: [id])
+  seller               User                  @relation("ListingSeller", fields: [sellerUserId], references: [id])
+  category             Category              @relation(fields: [categoryId], references: [id])
+  photos               ListingPhoto[]
+  provenanceStatements ProvenanceStatement[]
+  complianceReviews    ComplianceReview[]
+  auction              Auction?
+  orders               Order[]
+  fingerprint          ItemFingerprint?
+  aiAnalyses           AiAnalysis[]
+  gradingSubmissions   GradingSubmission[]
+  dailyStats           ListingDailyStat[]
+  priceChanges         ListingPriceChange[]
+  outcome              ListingOutcome?
+
+  @@index([storefrontId, status])
+  @@index([categoryId, status])
+}
+
+model ListingPhoto {
+  id         String   @id @default(cuid())
+  listingId  String
+  storageKey String
+  pHash      String?
+  width      Int?
+  height     Int?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([pHash])
+}
+
+enum AcquisitionSource {
+  PRIVATE_LAND_WITH_PERMISSION
+  INHERITED
+  PURCHASED
+  OTHER
+}
+
+model ProvenanceStatementTemplate {
+  id          String                @id @default(cuid())
+  version     Int                   @unique
+  body        String
+  approvedBy  String?
+  effectiveAt DateTime
+  createdAt   DateTime              @default(now())
+  statements  ProvenanceStatement[]
+}
+
+/// Immutable once signed; edits create a new row.
+model ProvenanceStatement {
+  id                                          String            @id @default(cuid())
+  listingId                                   String
+  sellerUserId                                String
+  templateId                                  String
+  acquisitionSource                           AcquisitionSource
+  acquisitionState                            String?
+  acquisitionYearApprox                       Int?
+  landownerPermissionDocKey                   String?
+  priorOwnerChain                             Json?
+  attestsNotFederalStateOrTribalLand          Boolean
+  attestsNotHumanRemainsFuneralSacredPatrimony Boolean
+  attestsNotIndianMadeMisrepresented          Boolean
+  signedName                                  String
+  signedAt                                    DateTime          @default(now())
+  ip                                          String?
+  userAgent                                   String?
+  signatureHash                               String
+  listing                                     Listing           @relation(fields: [listingId], references: [id])
+  seller                                      User              @relation(fields: [sellerUserId], references: [id])
+  template                                    ProvenanceStatementTemplate @relation(fields: [templateId], references: [id])
+
+  @@index([listingId])
+}
+
+enum ComplianceReviewReason {
+  AI_FLAG
+  CATEGORY
+  KEYWORD
+  REPORT
+  RANDOM_AUDIT
+}
+
+enum ComplianceReviewStatus {
+  OPEN
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+model ComplianceReview {
+  id         String                 @id @default(cuid())
+  listingId  String
+  reason     ComplianceReviewReason
+  status     ComplianceReviewStatus @default(OPEN)
+  reviewerId String?
+  decision   String?
+  notes      String?
+  createdAt  DateTime               @default(now())
+  decidedAt  DateTime?
+  listing    Listing                @relation(fields: [listingId], references: [id])
+  reviewer   User?                  @relation("ComplianceReviewer", fields: [reviewerId], references: [id])
+
+  @@index([status, createdAt])
+}
+
+model ProhibitedTerm {
+  id        String   @id @default(cuid())
+  pattern   String   @unique
+  isRegex   Boolean  @default(false)
+  reason    String
+  createdAt DateTime @default(now())
+}
+
+// ───────────────────────────── Auctions ─────────────────────────────
+
+enum AuctionStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  SETTLED
+  RELISTED
+  CANCELLED
+}
+
+model Auction {
+  id                 String        @id @default(cuid())
+  listingId          String        @unique
+  startsAt           DateTime
+  endsAt             DateTime
+  originalEndsAt     DateTime
+  startingBidCents   Int
+  reserveCents       Int?
+  isNoReserve        Boolean
+  softCloseMinutes   Int
+  paymentWindowHours Int
+  status             AuctionStatus @default(SCHEDULED)
+  currentHighBidId   String?       @unique
+  listing            Listing       @relation(fields: [listingId], references: [id])
+  bids               Bid[]         @relation("AuctionBids")
+  currentHighBid     Bid?          @relation("AuctionHighBid", fields: [currentHighBidId], references: [id])
+  nonPayingStrikes   NonPayingBidderStrike[]
+}
+
+enum BidStatus {
+  ACTIVE
+  OUTBID
+  RETRACTED
+  WINNING
+  VOIDED_SHILL
+}
+
+model Bid {
+  id             String         @id @default(cuid())
+  auctionId      String
+  bidderUserId   String
+  amountCents    Int
+  maxProxyCents  Int?
+  placedAt       DateTime       @default(now())
+  ipHash         String?
+  deviceIdHash   String?
+  status         BidStatus      @default(ACTIVE)
+  auction        Auction        @relation("AuctionBids", fields: [auctionId], references: [id])
+  bidder         User           @relation(fields: [bidderUserId], references: [id])
+  highBidOf      Auction?       @relation("AuctionHighBid")
+  retraction     BidRetraction?
+
+  @@index([auctionId, amountCents])
+  @@index([bidderUserId, placedAt])
+}
+
+model BidRetraction {
+  id           String   @id @default(cuid())
+  bidId        String   @unique
+  reason       String
+  approvedById String?
+  createdAt    DateTime @default(now())
+  bid          Bid      @relation(fields: [bidId], references: [id])
+}
+
+model NonPayingBidderStrike {
+  id        String   @id @default(cuid())
+  userId    String
+  auctionId String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  auction   Auction  @relation(fields: [auctionId], references: [id])
+}
+
+// ───────────────────────────── Orders, payments, ledger ─────────────────────────────
+
+enum OrderSource {
+  FIXED
+  AUCTION
+  SECOND_CHANCE
+}
+
+enum OrderStatus {
+  CREATED
+  PAID_HELD
+  SHIPPED
+  DELIVERED
+  RELEASED
+  AUTO_RELEASED
+  DISPUTED
+  RESOLVED_RELEASE
+  RESOLVED_REFUND
+  RESOLVED_PARTIAL
+  CANCELLED_REFUNDED
+  EXPIRED
+}
+
+model Order {
+  id               String      @id @default(cuid())
+  listingId        String
+  buyerUserId      String
+  sellerUserId     String
+  storefrontId     String
+  source           OrderSource
+  subtotalCents    Int
+  shippingCents    Int         @default(0)
+  taxCents         Int         @default(0)
+  platformFeeCents Int
+  feeRateBps       Int
+  status           OrderStatus @default(CREATED)
+  paymentDueAt     DateTime?
+  deliveredAt      DateTime?
+  releaseEligibleAt DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  listing          Listing          @relation(fields: [listingId], references: [id])
+  buyer            User             @relation("OrderBuyer", fields: [buyerUserId], references: [id])
+  seller           User             @relation("OrderSeller", fields: [sellerUserId], references: [id])
+  storefront       Storefront       @relation(fields: [storefrontId], references: [id])
+  shipment         Shipment?
+  payments         Payment[]
+  transfers        Transfer[]
+  refunds          Refund[]
+  disputes         Dispute[]
+  ledgerEntries    LedgerEntry[]
+  referralEarnings ReferralEarning[]
+  firstSaleOf      Referral?        @relation("ReferralFirstSale")
+
+  @@index([buyerUserId])
+  @@index([sellerUserId])
+  @@index([status])
+}
+
+enum ShipmentStatus {
+  LABEL_CREATED
+  IN_TRANSIT
+  DELIVERED
+  EXCEPTION
+  RETURNED
+}
+
+model Shipment {
+  id             String         @id @default(cuid())
+  orderId        String         @unique
+  carrier        String
+  trackingNumber String
+  status         ShipmentStatus @default(LABEL_CREATED)
+  deliveredAt    DateTime?
+  order          Order          @relation(fields: [orderId], references: [id])
+}
+
+enum PaymentStatus {
+  REQUIRES_PAYMENT
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  orderId               String
+  stripePaymentIntentId String        @unique
+  stripeChargeId        String?       @unique
+  amountCents           Int
+  status                PaymentStatus
+  createdAt             DateTime      @default(now())
+  order                 Order         @relation(fields: [orderId], references: [id])
+}
+
+enum TransferStatus {
+  PENDING
+  PAID
+  REVERSED
+}
+
+model Transfer {
+  id               String         @id @default(cuid())
+  orderId          String
+  stripeTransferId String?        @unique
+  amountCents      Int
+  status           TransferStatus @default(PENDING)
+  createdAt        DateTime       @default(now())
+  order            Order          @relation(fields: [orderId], references: [id])
+}
+
+model Refund {
+  id             String   @id @default(cuid())
+  orderId        String
+  stripeRefundId String?  @unique
+  amountCents    Int
+  reason         String
+  createdAt      DateTime @default(now())
+  order          Order    @relation(fields: [orderId], references: [id])
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+}
+
+enum DisputeResolution {
+  RELEASE
+  REFUND
+  PARTIAL
+}
+
+model Dispute {
+  id           String             @id @default(cuid())
+  orderId      String
+  openedById   String
+  reason       String
+  status       DisputeStatus      @default(OPEN)
+  resolution   DisputeResolution?
+  evidenceKeys String[]
+  createdAt    DateTime           @default(now())
+  resolvedAt   DateTime?
+  order        Order              @relation(fields: [orderId], references: [id])
+  openedBy     User               @relation("DisputeOpener", fields: [openedById], references: [id])
+}
+
+enum LedgerAccountKind {
+  PLATFORM_REVENUE
+  SELLER_PAYABLE
+  REFERRAL_PAYABLE
+  BUYER_HELD
+  PROCESSOR_FEES
+  CASH
+}
+
+model LedgerAccount {
+  id       String            @id @default(cuid())
+  /// e.g. "platform_revenue", "seller_payable:<userId>", "buyer_held:<orderId>"
+  code     String            @unique
+  kind     LedgerAccountKind
+  debits   LedgerEntry[]     @relation("LedgerDebit")
+  credits  LedgerEntry[]     @relation("LedgerCredit")
+}
+
+model LedgerEntry {
+  id              String        @id @default(cuid())
+  debitAccountId  String
+  creditAccountId String
+  amountCents     Int
+  orderId         String?
+  referralEarningId String?
+  memo            String
+  createdAt       DateTime      @default(now())
+  debitAccount    LedgerAccount @relation("LedgerDebit", fields: [debitAccountId], references: [id])
+  creditAccount   LedgerAccount @relation("LedgerCredit", fields: [creditAccountId], references: [id])
+  order           Order?        @relation(fields: [orderId], references: [id])
+  referralEarning ReferralEarning? @relation(fields: [referralEarningId], references: [id])
+
+  @@index([orderId])
+}
+
+// ───────────────────────────── Trust & safety ─────────────────────────────
+
+enum AccountLinkSignal {
+  SAME_DEVICE
+  SAME_IP
+  SAME_PAYMENT_FINGERPRINT
+  SAME_SHIPPING_ADDRESS
+  SAME_BANK
+  SAME_ID_HASH_ATTEMPT
+}
+
+model AccountLink {
+  id          String            @id @default(cuid())
+  userAId     String
+  userBId     String
+  signal      AccountLinkSignal
+  strength    Int
+  firstSeenAt DateTime          @default(now())
+  userA       User              @relation("AccountLinkA", fields: [userAId], references: [id])
+  userB       User              @relation("AccountLinkB", fields: [userBId], references: [id])
+
+  @@unique([userAId, userBId, signal])
+}
+
+enum FraudDetector {
+  SELF_BUY
+  SHILL
+  CIRCLE_TRADE
+  SELF_RESALE
+  RETRACTION_ABUSE
+  NONPAY
+}
+
+enum FraudSignalStatus {
+  OPEN
+  CONFIRMED
+  DISMISSED
+}
+
+model FraudSignal {
+  id          String              @id @default(cuid())
+  subjectType String
+  subjectId   String
+  detector    FraudDetector
+  score       Int
+  evidence    Json
+  status      FraudSignalStatus   @default(OPEN)
+  createdAt   DateTime            @default(now())
+  actions     EnforcementAction[]
+
+  @@index([status, createdAt])
+}
+
+enum EnforcementType {
+  WARNING
+  BID_VOID
+  LISTING_REMOVED
+  FEE_FORFEIT
+  BADGE_REVOKED
+  SUSPENSION
+  BAN
+}
+
+model EnforcementAction {
+  id            String          @id @default(cuid())
+  userId        String
+  type          EnforcementType
+  reason        String
+  fraudSignalId String?
+  actorId       String
+  expiresAt     DateTime?
+  createdAt     DateTime        @default(now())
+  user          User            @relation("EnforcementSubject", fields: [userId], references: [id])
+  actor         User            @relation("EnforcementActor", fields: [actorId], references: [id])
+  fraudSignal   FraudSignal?    @relation(fields: [fraudSignalId], references: [id])
+}
+
+model ItemFingerprint {
+  id        String   @id @default(cuid())
+  listingId String   @unique
+  pHashes   String[]
+  textHash  String
+  createdAt DateTime @default(now())
+  listing   Listing  @relation(fields: [listingId], references: [id])
+
+  @@index([textHash])
+}
+
+// ───────────────────────────── Growth: membership, referrals, badges ─────────────────────────────
+
+/// Deliberately has no referral/recruiting columns (roadmap item 5).
+/// Fee rate and price are copied from src/config/economics.ts when seeded.
+model MembershipTier {
+  id                     String       @id @default(cuid())
+  code                   String       @unique
+  name                   String
+  monthlyPriceCents      Int
+  feeRateBps             Int
+  featuredListingCredits Int          @default(0)
+  analyticsEnabled       Boolean      @default(false)
+  earlyAccess            Boolean      @default(false)
+  memberships            Membership[]
+}
+
+enum MembershipStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+model Membership {
+  id                   String           @id @default(cuid())
+  userId               String           @unique
+  tierId               String
+  stripeSubscriptionId String?          @unique
+  status               MembershipStatus
+  currentPeriodEnd     DateTime?
+  user                 User             @relation(fields: [userId], references: [id])
+  tier                 MembershipTier   @relation(fields: [tierId], references: [id])
+}
+
+model Referral {
+  id               String            @id @default(cuid())
+  referrerUserId   String
+  refereeUserId    String            @unique
+  code             String
+  firstSaleOrderId String?           @unique
+  createdAt        DateTime          @default(now())
+  referrer         User              @relation("Referrer", fields: [referrerUserId], references: [id])
+  referee          User              @relation("Referee", fields: [refereeUserId], references: [id])
+  firstSaleOrder   Order?            @relation("ReferralFirstSale", fields: [firstSaleOrderId], references: [id])
+  earnings         ReferralEarning[]
+}
+
+enum ReferralEarningKind {
+  FIRST_SALE
+  ONGOING
+}
+
+enum ReferralEarningStatus {
+  PENDING
+  PAYABLE
+  PAID
+  CLAWED_BACK
+}
+
+model ReferralEarning {
+  id               String                @id @default(cuid())
+  referralId       String
+  orderId          String
+  kind             ReferralEarningKind
+  rateBps          Int
+  /// Sale price (owner decision B2).
+  basisCents       Int
+  platformFeeCents Int
+  cappedAtFee      Boolean
+  amountCents      Int
+  status           ReferralEarningStatus @default(PENDING)
+  createdAt        DateTime              @default(now())
+  referral         Referral              @relation(fields: [referralId], references: [id])
+  order            Order                 @relation(fields: [orderId], references: [id])
+  ledgerEntries    LedgerEntry[]
+
+  @@unique([referralId, orderId])
+}
+
+enum BadgeKind {
+  VOLUME
+  COSMETIC
+}
+
+/// Proprietor is intentionally NOT a Badge row; see model Proprietor.
+model Badge {
+  id          String      @id @default(cuid())
+  code        String      @unique
+  name        String
+  kind        BadgeKind
+  description String
+  criteria    Json?
+  userBadges  UserBadge[]
+}
+
+model UserBadge {
+  id            String    @id @default(cuid())
+  userId        String
+  badgeId       String
+  awardedAt     DateTime  @default(now())
+  revokedAt     DateTime?
+  basisSnapshot Json?
+  user          User      @relation(fields: [userId], references: [id])
+  badge         Badge     @relation(fields: [badgeId], references: [id])
+
+  @@unique([userId, badgeId])
+}
+
+// ───────────────────────────── AI ─────────────────────────────
+
+enum AiUncertainty {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model AiAnalysis {
+  id               String        @id @default(cuid())
+  listingId        String?
+  photoIds         String[]
+  provider         String
+  model            String
+  promptVersion    String
+  rawOutput        Json
+  normalizedOutput Json
+  uncertainty      AiUncertainty
+  flags            String[]
+  guardrailActions String[]
+  createdAt        DateTime      @default(now())
+  listing          Listing?      @relation(fields: [listingId], references: [id])
+}
+
+// ───────────────────────────── Grading arm ─────────────────────────────
+
+enum GradingTier {
+  AUTHENTICATED
+  GRADED
+  MUSEUM_GRADE
+}
+
+enum AuthenticatorStatus {
+  ACTIVE
+  PAUSED
+  TERMINATED
+}
+
+model Authenticator {
+  id                String              @id @default(cuid())
+  name              String
+  organization      String?
+  credentials       String
+  specialtyCategoryIds String[]
+  status            AuthenticatorStatus @default(ACTIVE)
+  agreementSignedAt DateTime?
+  payoutAccount     String?
+  createdAt         DateTime            @default(now())
+  submissions       GradingSubmission[]
+  results           GradingResult[]
+  verifications     GradeVerification[]
+}
+
+model GradingRubric {
+  id            String          @id @default(cuid())
+  categoryId    String
+  version       Int
+  /// [{ key, label, weight, scale }]
+  criteria      Json
+  effectiveFrom DateTime
+  approvedBy    String?
+  category      Category        @relation(fields: [categoryId], references: [id])
+  results       GradingResult[]
+
+  @@unique([categoryId, version])
+}
+
+model GradingFeeSchedule {
+  id                    String      @id @default(cuid())
+  tier                  GradingTier
+  categoryId            String?
+  feeCents              Int
+  authenticatorShareBps Int
+  category              Category?   @relation(fields: [categoryId], references: [id])
+}
+
+enum GradingSubmissionStatus {
+  SUBMITTED
+  RECEIVED
+  IN_REVIEW
+  COMPLETED
+  REJECTED
+  RETURNED
+}
+
+model GradingSubmission {
+  id                      String                  @id @default(cuid())
+  listingId               String?
+  ownerUserId             String
+  categoryId              String
+  requestedTier           GradingTier
+  feeCents                Int
+  paymentId               String?
+  status                  GradingSubmissionStatus @default(SUBMITTED)
+  assignedAuthenticatorId String?
+  createdAt               DateTime                @default(now())
+  listing                 Listing?                @relation(fields: [listingId], references: [id])
+  owner                   User                    @relation(fields: [ownerUserId], references: [id])
+  category                Category                @relation(fields: [categoryId], references: [id])
+  assignedAuthenticator   Authenticator?          @relation(fields: [assignedAuthenticatorId], references: [id])
+  results                 GradingResult[]
+}
+
+enum GradingResultStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  VERIFIED
+  PUBLISHED
+  REJECTED
+  REVOKED
+}
+
+/// Stage 1: graded by a partner authenticator. Stage 2: graded in-house and must be
+/// verified (GradeVerification AGREE/ADJUST) before it can be PUBLISHED.
+model GradingResult {
+  id                      String              @id @default(cuid())
+  submissionId            String
+  rubricId                String?
+  tierAwarded             GradingTier
+  criterionScores         Json?
+  overallGrade            String?
+  notes                   String?
+  certificateNumber       String              @unique
+  photoKeys               String[]
+  gradedByAuthenticatorId String?
+  gradedByUserId          String?
+  status                  GradingResultStatus @default(DRAFT)
+  publishedAt             DateTime?
+  revokedAt               DateTime?
+  createdAt               DateTime            @default(now())
+  submission              GradingSubmission   @relation(fields: [submissionId], references: [id])
+  rubric                  GradingRubric?      @relation(fields: [rubricId], references: [id])
+  gradedByAuthenticator   Authenticator?      @relation(fields: [gradedByAuthenticatorId], references: [id])
+  gradedByUser            User?               @relation("InHouseGrader", fields: [gradedByUserId], references: [id])
+  verifications           GradeVerification[]
+}
+
+enum GradeVerificationDecision {
+  AGREE
+  ADJUST
+  DISAGREE
+}
+
+model GradeVerification {
+  id              String                    @id @default(cuid())
+  gradingResultId String
+  authenticatorId String
+  decision        GradeVerificationDecision
+  adjustedScores  Json?
+  notes           String?
+  decidedAt       DateTime                  @default(now())
+  gradingResult   GradingResult             @relation(fields: [gradingResultId], references: [id])
+  authenticator   Authenticator             @relation(fields: [authenticatorId], references: [id])
+}
+
+// ───────────────────────────── Sales-outcome data (Grading Stage 1) ─────────────────────────────
+
+model ListingDailyStat {
+  listingId String
+  date      DateTime @db.Date
+  views     Int      @default(0)
+  saves     Int      @default(0)
+  offers    Int      @default(0)
+  bids      Int      @default(0)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@id([listingId, date])
+}
+
+model ListingPriceChange {
+  id            String   @id @default(cuid())
+  listingId     String
+  oldPriceCents Int
+  newPriceCents Int
+  changedAt     DateTime @default(now())
+  listing       Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+}
+
+enum ListingOutcomeType {
+  SOLD
+  EXPIRED
+  WITHDRAWN
+  REMOVED
+  UNSOLD_AUCTION
+}
+
+/// Snapshot taken when a listing leaves LIVE, so later edits never rewrite history.
+model ListingOutcome {
+  id                   String             @id @default(cuid())
+  listingId            String             @unique
+  categoryId           String
+  vertical             Vertical
+  outcome              ListingOutcomeType
+  firstAskCents        Int?
+  finalAskCents        Int?
+  salePriceCents       Int?
+  daysLive             Int
+  totalViews           Int
+  totalSaves           Int
+  photoCount           Int
+  sellerConditionGrade String?
+  wasAuthenticated     Boolean
+  gradingTier          GradingTier?
+  aiValueLowCents      Int?
+  aiValueHighCents     Int?
+  aiUncertainty        AiUncertainty?
+  closedAt             DateTime
+  listing              Listing            @relation(fields: [listingId], references: [id])
+  category             Category           @relation(fields: [categoryId], references: [id])
+
+  @@index([categoryId, outcome])
+}
+
+// ───────────────────────────── Audit ─────────────────────────────
+
+enum AuditActorType {
+  USER
+  ADMIN
+  SYSTEM
+  WEBHOOK
+}
+
+/// Append-only: UPDATE/DELETE/TRUNCATE are blocked by triggers in the migration.
+/// hash = sha256(prevHash || canonical event payload).
+model AuditEvent {
+  seq         BigInt         @id @default(autoincrement())
+  id          String         @unique @default(cuid())
+  at          DateTime       @default(now())
+  actorUserId String?
+  actorType   AuditActorType
+  action      String
+  subjectType String
+  subjectId   String?
+  before      Json?
+  after       Json?
+  ipHash      String?
+  requestId   String?
+  prevHash    String
+  hash        String         @unique
+  actor       User?          @relation(fields: [actorUserId], references: [id])
+
+  @@index([subjectType, subjectId])
+  @@index([actorUserId])
+  @@index([action])
+}
