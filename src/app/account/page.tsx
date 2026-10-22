@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { IdentityStatusCard } from "@/components/identity-status";
 import { UserIdentity } from "@/components/user-identity";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
 import { requireUser } from "@/lib/auth/dal";
@@ -17,25 +18,33 @@ export default function AccountPage() {
 
 async function AccountDetails() {
   const user = await requireUser();
-  const identity = await getPublicIdentity(db, user.id);
+  const [identity, verification] = await Promise.all([
+    getPublicIdentity(db, user.id),
+    db.identityVerification.findUnique({ where: { userId: user.id }, select: { status: true } }),
+  ]);
 
   return (
-    <div className="rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
-      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Your account</p>
-      <div className="mt-3">{identity && <UserIdentity identity={identity} size="lg" />}</div>
-      <dl className="mt-6 grid grid-cols-[8rem_1fr] gap-y-2 text-sm">
-        <dt className="text-stone-500">Email</dt>
-        <dd>{user.email}</dd>
-        <dt className="text-stone-500">Role</dt>
-        <dd>{user.role.toLowerCase()}</dd>
-      </dl>
-      <p className="mt-6 text-sm text-stone-600">
-        Need a new password?{" "}
-        <Link href="/forgot-password" className="underline">
-          Email me a reset link
-        </Link>
-        .
-      </p>
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">
+          Your account
+        </p>
+        <div className="mt-3">{identity && <UserIdentity identity={identity} size="lg" />}</div>
+        <dl className="mt-6 grid grid-cols-[8rem_1fr] gap-y-2 text-sm">
+          <dt className="text-stone-500">Email</dt>
+          <dd>{user.email}</dd>
+          <dt className="text-stone-500">Role</dt>
+          <dd>{user.role.toLowerCase()}</dd>
+        </dl>
+        <p className="mt-6 text-sm text-stone-600">
+          Need a new password?{" "}
+          <Link href="/forgot-password" className="underline">
+            Email me a reset link
+          </Link>
+          .
+        </p>
+      </div>
+      <IdentityStatusCard status={verification?.status ?? null} />
     </div>
   );
 }

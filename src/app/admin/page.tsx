@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { UserIdentity } from "@/components/user-identity";
 import { economics, splitSale } from "@/config/economics";
 import { platform } from "@/config/platform";
@@ -21,7 +22,7 @@ export default function AdminPage() {
 
 async function Dashboard() {
   const owner = await requireOwner();
-  const [identity, users, events, chain] = await Promise.all([
+  const [identity, users, events, chain, openListingReviews, openIdentityReviews] = await Promise.all([
     getPublicIdentity(db, owner.id),
     db.user.findMany({
       orderBy: { createdAt: "desc" },
@@ -38,6 +39,8 @@ async function Dashboard() {
     }),
     db.auditEvent.findMany({ orderBy: { seq: "desc" }, take: 25 }),
     verifyAuditChain(db),
+    db.complianceReview.count({ where: { status: "OPEN" } }),
+    db.identityVerification.count({ where: { status: "NEEDS_REVIEW" } }),
   ]);
 
   return (
@@ -54,6 +57,22 @@ async function Dashboard() {
           </p>
         )}
       </section>
+
+      <Link
+        href="/admin/compliance"
+        className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white p-6 shadow-sm hover:border-stone-400"
+      >
+        <div>
+          <h2 className="font-serif text-lg font-semibold">Compliance queue</h2>
+          <p className="mt-1 text-sm text-stone-500">
+            Every beta listing is reviewed before it goes live. Identity matches need a decision too.
+          </p>
+        </div>
+        <span className="text-sm font-medium">
+          {openListingReviews} listing{openListingReviews === 1 ? "" : "s"} · {openIdentityReviews} identit
+          {openIdentityReviews === 1 ? "y" : "ies"} →
+        </span>
+      </Link>
 
       <EconomicsPanel />
 

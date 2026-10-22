@@ -37,6 +37,14 @@ async function UserMenu() {
   }
   return (
     <nav className="flex items-center gap-4 text-sm">
+      <Link href="/sell" className="text-stone-700 hover:text-stone-950">
+        Sell
+      </Link>
+      {(user.role === "OWNER" || user.role === "MODERATOR") && (
+        <Link href="/admin/compliance" className="text-stone-700 hover:text-stone-950">
+          Compliance
+        </Link>
+      )}
       {user.role === "OWNER" && (
         <Link href="/admin" className="text-stone-700 hover:text-stone-950">
           GM dashboard

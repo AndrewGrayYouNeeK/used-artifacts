@@ -48,3 +48,10 @@ export async function requireOwner(): Promise<CurrentUser> {
   if (user.role !== "OWNER") redirect("/");
   return user;
 }
+
+/** Owner or moderator: compliance and identity review. */
+export async function requireStaff(): Promise<CurrentUser> {
+  const user = await requireUser();
+  if (user.role !== "OWNER" && user.role !== "MODERATOR") redirect("/");
+  return user;
+}
