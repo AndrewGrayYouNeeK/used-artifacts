@@ -12,11 +12,13 @@ Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in sec
 | B2 | **Referral payouts are a share of the SALE PRICE**, paid from the platform's cut: 10% on a recruit's first sale, then 5% on every later sale for as long as the recruit sells (it never ends). |
 | B3 | **One paid tier** at $20/month. It lowers the seller fee from 10% to 5%. |
 | B4 | **Buyers need ID verification only to bid or sell.** Browsing and fixed-price buying do not require it. |
-| B5 | A cosmetic **"Beta Founder" badge** is allowed. It has no effect on fees or ranking and is kept separate from volume badges. |
-| B6 | **Scope is artifacts and antiques.** The category tree covers both. Native American and archaeological categories keep the enhanced review rules. |
+| B5 | A cosmetic **"Beta Founder" badge** is allowed for the **first 100 sellers**. It has no effect on fees or ranking and is kept separate from volume badges. |
+| B10 | A unique **"Proprietor" badge** for Andrew, the platform owner. It has premium, top-tier styling and is distinct from Beta Founder. It cannot be earned or bought, and code and the database enforce that **exactly one user can ever hold it**. It is shown on his owner dashboard profile and everywhere he appears (storefront, listings, bids, comments). See section 4.6a. |
+| B6 | **Scope (corrected 2026-10-22): artifacts first, antiques later.** The long-term definition includes antiques, but the **first beta is artifacts only**. Antiques open once grading exists. Every category carries a `vertical` (`ARTIFACT` or `ANTIQUE`), and the `ENABLED_VERTICALS` config value controls which verticals are visible and listable, so antiques can be switched on later without a migration. Native American and archaeological categories keep the enhanced review rules. |
+| B9 | **Grading is staged (roadmap item 11, revised).** Grading Stage 1 runs during the beta: 1–2 private partner authenticators for high-value pieces, results shown as listing badges, and sales-outcome data collected. Grading Stage 2 starts once patterns emerge: in-house rubrics, with partner verification before any grade goes public. See section 6.2. *The brand comes from accuracy, not from having a lab on day one.* |
 | B7 | **US-only shipping** at launch. |
 | B8 | **3-day hold after delivery** before auto-release. **48-hour payment window** for auction winners. |
-| — | Unchanged: auctions stay off until the Kentucky licensing question (L1) is answered, paid tiers launch after the beta, and grading comes last. |
+| — | Unchanged: auctions stay off until the Kentucky licensing question (L1) is answered, and paid tiers launch after the beta. The full in-house grading program and the MUSEUM_GRADE tier still come last. |
 
 ### 0.1 Configuration values
 
@@ -32,6 +34,8 @@ All of these numbers are config values, not hard-coded. In Phase 0 they live in 
 | `REFERRAL_CAP_AT_PLATFORM_FEE` | `true` | If true, a referral payout can never exceed the fee the platform actually collected on that order (see 0.2) |
 | `ESCROW_AUTO_RELEASE_DAYS` | 3 | Days after carrier-confirmed delivery before funds auto-release |
 | `AUCTION_PAYMENT_WINDOW_HOURS` | 48 | Time an auction winner has to pay |
+| `ENABLED_VERTICALS` | `ARTIFACT` | Comma-separated list of verticals open for listing and browsing. Add `ANTIQUE` once grading exists. |
+| `HIGH_VALUE_THRESHOLD_CENTS` | 50000 ($500), placeholder | Asking price at or above which a listing is eligible for partner authentication in Grading Stage 1. Andrew sets the real number. |
 
 (bps = basis points; 100 bps = 1%.)
 
@@ -192,7 +196,7 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 
 ### 4.2 Catalog and compliance
 
-- **Category**: `id, parentId, name, slug, isNativeAmerican (bool), requiresEnhancedReview (bool), rubricId?`
+- **Category**: `id, parentId, name, slug, vertical (ARTIFACT|ANTIQUE), isNativeAmerican (bool), requiresEnhancedReview (bool), rubricId?`. Listings and browse are filtered to `ENABLED_VERTICALS`.
 - **Listing**: `id, storefrontId, sellerUserId, categoryId, title, description, condition, format (FIXED|AUCTION), priceCents?, status (DRAFT|PENDING_REVIEW|LIVE|SOLD|REMOVED), featuredUntil?, publishedAt`
 - **ListingPhoto**: `listingId, storageKey, pHash, width, height, order`
 - **ProvenanceStatement**: `id, listingId, sellerUserId, statementVersion, acquisitionSource (enum: PRIVATE_LAND_WITH_PERMISSION|INHERITED|PURCHASED|OTHER), acquisitionState, acquisitionYearApprox, landownerPermissionDocKey?, priorOwnerChain (json), attestsNotFederalOrStateOrTribalLand (bool), attestsNotHumanRemainsFuneralSacredPatrimony (bool), attestsNotIndianMadeMisrepresented (bool), signedName, signedAt, ip, userAgent, signatureHash`. The statement is **immutable** once signed; edits create a new version.
@@ -230,21 +234,46 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 - **Referral**: `id, referrerUserId, refereeUserId (unique), code, createdAt, firstSaleOrderId?`
 - **ReferralEarning**: `referralId, orderId (unique per referral), kind (FIRST_SALE|ONGOING), rateBps, basisCents (= sale price per B2), platformFeeCents, cappedAtFee (bool), amountCents, status (PENDING|PAYABLE|PAID|CLAWED_BACK)`. `amountCents = basisCents × rateBps`, capped at `platformFeeCents` when `REFERRAL_CAP_AT_PLATFORM_FEE` is on. It becomes PAYABLE only when the order reaches `RELEASED`/`AUTO_RELEASED`, and it is clawed back on refund.
 - **Badge**: `id, code, name, criteria (json: e.g. {completedSalesCount ≥ 10} or {gmvCents ≥ X})`
-- **UserBadge**: `userId, badgeId, awardedAt, revokedAt?, basisSnapshot`. It is recomputed only from released orders that the fraud checks did not flag.
+- **Badge** gains `kind (VOLUME|COSMETIC)`. VOLUME badges are computed from sales. COSMETIC covers "Beta Founder", which goes to the first 100 sellers and is capped by `BETA_FOUNDER_LIMIT=100`.
+- **UserBadge**: `userId, badgeId, awardedAt, revokedAt?, basisSnapshot`. Volume badges are recomputed only from released orders that the fraud checks did not flag.
+
+### 4.6a Proprietor badge (B10)
+
+The Proprietor badge is **not** a `Badge` row, so the generic badge-award code can never touch it. It lives in its own singleton table.
+
+- **Proprietor**: `id Int @id @default(1)` with `CHECK (id = 1)`, plus `userId (unique, FK → User)` and `assignedAt`. Because `id` can only be 1, the table can hold at most one row, so at most one person can ever be Proprietor.
+- **Database triggers** (raw SQL in the migration):
+  - **Insert:** rejected unless the target user has `role = OWNER`.
+  - **Update or delete:** always rejected. Once the row exists, no admin action, API call, or ordinary migration can move or remove it.
+  - **Demotion:** changing the role of the Proprietor's `User` row away from OWNER is rejected.
+- **Application guard:** there is no API route, server action, or admin UI that grants the badge. It is created only by the one-time `npm run proprietor:assign` script, which reads `PROPRIETOR_EMAIL`, refuses if a row already exists, and writes an audit event. The generic `awardBadge()` function has no code path to it.
+- **What we can't guarantee:** a Postgres superuser running hand-written SQL could still drop the triggers. Production should run the app under a non-superuser role that has no `TRIGGER` or DDL rights on this table. A genuine ownership transfer (for example a sale of the business) would be a deliberate, documented manual database procedure, not a product feature.
+- **Display:** a shared `<UserIdentity>` component renders a user's name and badges everywhere a user appears: the owner dashboard profile now, and storefronts, listings, bids, and comments as those features ship. It renders the Proprietor badge first, with premium styling (gold gradient, distinct icon), before any other badge. Comments are not in the data model yet; when added they will use the same component.
 
 ### 4.7 AI
 
 - **AiAnalysis**: `id, listingId?, photoIds[], provider, model, promptVersion, rawOutput (json), normalizedOutput (json), uncertainty (LOW|MEDIUM|HIGH), flags[], guardrailActions[], createdAt`
 
-### 4.8 Grading arm (schema now, features later; roadmap item 11)
+### 4.8 Grading arm (roadmap item 11; the whole schema ships in Phase 0)
 
-- **Authenticator** (partner): `id, name, organization, credentials, specialties (category ids), status, agreementSignedAt, payoutAccount`
+- **Authenticator** (partner): `id, name, organization, credentials, specialties (category ids), status, agreementSignedAt, payoutAccount`. In Grading Stage 1 there are only 1–2 of these.
 - **GradingTier**: enum `AUTHENTICATED | GRADED | MUSEUM_GRADE`
-- **GradingRubric**: `id, categoryId (textiles|pottery|jewelry|stone tools|…), version, criteria (json: [{key, label, weight, scale}]), effectiveFrom, approvedBy`
+- **GradingRubric**: `id, categoryId (textiles|pottery|jewelry|stone tools|…), version, criteria (json: [{key, label, weight, scale}]), effectiveFrom, approvedBy`. Written in Grading Stage 2 from patterns in the Stage 1 data.
 - **GradingFeeSchedule**: `tier, categoryId?, feeCents, authenticatorShareBps`
 - **GradingSubmission**: `id, listingId?, ownerUserId, categoryId, requestedTier, feeCents, paymentId, status (SUBMITTED|RECEIVED|IN_REVIEW|COMPLETED|REJECTED|RETURNED), assignedAuthenticatorId`
-- **GradingResult**: `submissionId, rubricId+version, tierAwarded, criterionScores (json), overallGrade, notes, certificateNumber (unique), photos, signedBy, issuedAt, revokedAt?`
-- The listing page shows the certificate. A public `/verify/{certificateNumber}` page comes later.
+- **GradingResult**: `submissionId, rubricId? + version, tierAwarded, criterionScores (json), overallGrade, notes, certificateNumber (unique), photos, gradedByAuthenticatorId?, gradedByUserId? (in-house grader, e.g. Andrew), status (DRAFT|PENDING_VERIFICATION|VERIFIED|PUBLISHED|REJECTED|REVOKED), publishedAt, revokedAt?`.
+  - Stage 1: a partner authenticator produces the result directly. The tier is AUTHENTICATED and there is no rubric.
+  - Stage 2: an in-house grader produces it and it stays `PENDING_VERIFICATION`. **It can only reach `PUBLISHED` after a partner verification with decision AGREE or ADJUST.**
+- **GradeVerification**: `id, gradingResultId, authenticatorId, decision (AGREE|ADJUST|DISAGREE), adjustedScores (json)?, notes, decidedAt`. Partner agreement with in-house grades, per category and per grader, is tracked on the GM dashboard as the core accuracy metric.
+- **ListingBadge** (display): derived from a `PUBLISHED` GradingResult, for example "Authenticated by partner". The listing page shows it with the certificate number. A public `/verify/{certificateNumber}` page comes later.
+
+### 4.8a Sales-outcome data (Grading Stage 1 data collection)
+
+This data supports "what sells and what doesn't" analysis, and the Stage 2 rubrics are later written from it.
+
+- **ListingDailyStat**: `listingId, date, views, saves, offers, bids`. A daily rollup, so we don't store a row per view.
+- **ListingPriceChange**: `listingId, oldPriceCents, newPriceCents, changedAt`
+- **ListingOutcome**: one row per listing once it leaves `LIVE`. Fields: `listingId (unique), categoryId, vertical, outcome (SOLD|EXPIRED|WITHDRAWN|REMOVED|UNSOLD_AUCTION), firstAskCents, finalAskCents, salePriceCents?, daysLive, totalViews, totalSaves, photoCount, sellerConditionGrade, wasAuthenticated (bool), gradingTier?, aiValueLowCents?, aiValueHighCents?, aiUncertainty?, closedAt`. This is snapshotted at close so later edits don't rewrite history.
 
 ### 4.9 Audit
 
@@ -291,19 +320,40 @@ Pipeline: upload, strip EXIF, compute perceptual hash, then a `vision.analyze` j
 | **7** | **Closed beta** | 9 | Invite-only (invite codes issued by the owner), small trusted group, feedback channel, compliance review on 100% of listings, daily fraud review, kill switches. |
 | **8** | Membership tiers | 5 | Stripe Billing subscriptions, fee-rate overrides by tier, featured listings, seller analytics, early-access flags. No recruiting perks. |
 | **9** | Circle-trade detection hardening and public launch readiness | 2, 10 | Graph job tuned on beta data, appeal flows, load testing auctions, counsel sign-off on all legal templates. |
-| **10** | Grading arm | 11 | Phase 10a: authenticator partner onboarding plus the AUTHENTICATED tier. 10b: GRADED tier with rubrics for textiles, pottery, jewelry, and stone tools. 10c: MUSEUM_GRADE tier, certificates, the public verify page, per-item grading fees. |
+| **7a** | **Grading Stage 1 (during beta)** | 11 | 1–2 private partner authenticators onboarded. Owner-assigned authentication of high-value pieces (at or above `HIGH_VALUE_THRESHOLD_CENTS`). AUTHENTICATED results shown as listing badges. `ListingOutcome`, `ListingDailyStat`, and `ListingPriceChange` populated, with a basic "what sells" report on the GM dashboard. |
+| **10** | Grading Stage 2 and the full grading arm | 11 | Starts **once patterns emerge** in the Stage 1 data. In-house condition rubrics per category (textiles, pottery, stone tools, jewelry). Andrew's grades go to `PENDING_VERIFICATION`, and the same partner authenticators verify them before they go public. Accuracy (agreement-rate) dashboard. Per-item grading fees. After that: the MUSEUM_GRADE tier, the public verify page, and **opening the ANTIQUE vertical** via `ENABLED_VERTICALS`. |
 
 Notes:
 
 - The roadmap lists beta as item 9, after paid tiers. I recommend running the beta **before** paid tiers and **with auctions off unless L1 is cleared**, so the beta tests the risky core (compliance, escrow, fraud) without also introducing billing.
 - The owner dashboard (roadmap item 10) grows in every phase. Phase 4 is just where it becomes a complete tool.
-- The grading schema lands in Phase 0/1 migrations even though its UI comes in Phase 10, as requested.
+- The full grading schema, including Stage 2 verification and the sales-outcome tables, lands in the Phase 0 migration, so beta data is captured from day one.
 
-### 6.1 Proposed MVP (what the closed beta requires)
+### 6.1 MVP (what the closed beta requires)
 
-**In:** Phases 0 through 5 and Phase 7. That covers accounts with secure reset, ID verification and one identity per account, storefronts, fixed-price listings with signed provenance, compliance review, the AI analyzer with guardrails, Stripe Connect escrow-style holds with buyer confirmation, self-buy blocking and basic linkage detection, volume badges, referral tracking and payouts, the owner dashboard, and the audit log.
+**In:** Phases 0 through 5, plus Phase 7 and Grading Stage 1 (7a). That covers:
+- accounts with secure reset;
+- ID verification and one identity per account;
+- storefronts;
+- fixed-price listings with signed provenance, **artifact categories only**;
+- compliance review;
+- the AI analyzer with guardrails;
+- Stripe Connect escrow-style holds with buyer confirmation;
+- self-buy blocking and basic linkage detection;
+- volume badges plus the cosmetic Beta Founder badge;
+- referral tracking and payouts;
+- partner authentication badges on high-value pieces, and sales-outcome data capture;
+- the owner dashboard and the audit log.
 
-**Behind a flag / out:** auctions (pending L1), paid membership tiers, circle-trade graph detection (signals are collected; reviewers act on them manually during beta), and the grading arm (schema only).
+**Behind a flag / out:** auctions (pending L1), paid membership tiers, circle-trade graph detection (signals are collected; reviewers act on them manually during beta), the antiques vertical, in-house rubric grading (Stage 2), and MUSEUM_GRADE.
+
+### 6.2 Grading roadmap (roadmap item 11, revised by Andrew)
+
+1. **Grading Stage 1, during the beta.** Partner with 1–2 private authenticators for high-value pieces. Show their results as listing badges. Collect sales data on what sells and what doesn't (section 4.8a).
+2. **Grading Stage 2, once patterns emerge.** Write in-house condition rubrics per category (textiles, pottery, stone tools, jewelry). Andrew grades. The same partner authenticators verify his grades before they go public, and their agreement rate is tracked.
+3. **Later.** Per-item grading fees at scale, the MUSEUM_GRADE tier, the public certificate verification page, and opening the antiques vertical.
+
+The brand is built on accuracy, not on having a lab on day one.
 
 ---
 
