@@ -4,6 +4,8 @@ import { UserIdentity } from "@/components/user-identity";
 import { economics, splitSale } from "@/config/economics";
 import { platform } from "@/config/platform";
 import { gmMetrics, whatSells } from "@/domains/admin/metrics";
+import { killSwitchStates } from "@/domains/admin/kill-switches";
+import { utcDay } from "@/domains/admin/daily-review";
 import { verifyAuditChain } from "@/domains/audit/audit";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
 import { formatUsd } from "@/domains/pricing/pricing";
@@ -22,14 +24,18 @@ export default function AdminPage() {
 
 async function Dashboard() {
   const owner = await requireOwner();
-  const [identity, metrics, sells, chain, openIdentityReviews] = await Promise.all([
+  const [identity, metrics, sells, chain, openIdentityReviews, switches, lastReview] = await Promise.all([
     getPublicIdentity(db, owner.id),
     gmMetrics(db),
     whatSells(db),
     verifyAuditChain(db),
     db.identityVerification.count({ where: { status: "NEEDS_REVIEW" } }),
+    killSwitchStates(db),
+    db.dailyReview.findFirst({ orderBy: { day: "desc" }, select: { day: true } }),
   ]);
   const openSignals = metrics.trust.openSignals.reduce((n, s) => n + s.count, 0);
+  const paused = switches.filter((s) => s.paused);
+  const reviewedToday = lastReview?.day.getTime() === utcDay(new Date()).getTime();
 
   return (
     <>
@@ -50,6 +56,22 @@ async function Dashboard() {
             : `Audit hash chain BROKEN at event #${chain.firstBrokenSeq}. Investigate before anything else.`}
         </p>
       </section>
+
+      {(paused.length > 0 || !reviewedToday) && (
+        <div className="space-y-2">
+          {paused.length > 0 && (
+            <Link href="/admin/beta" className="block rounded-xl bg-red-50 px-4 py-3 text-sm text-red-800 hover:bg-red-100">
+              Paused: {paused.map((s) => s.label.toLowerCase()).join(", ")}. Resume from Beta controls.
+            </Link>
+          )}
+          {!reviewedToday && (
+            <Link href="/admin/trust" className="block rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100">
+              Today&apos;s fraud review isn&apos;t signed off yet
+              {lastReview ? ` (last: ${lastReview.day.toISOString().slice(0, 10)})` : ""}.
+            </Link>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <QueueLink

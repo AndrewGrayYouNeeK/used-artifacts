@@ -8,13 +8,23 @@ import { PROVENANCE_TEMPLATE_V2 } from "@/domains/compliance/provenance-template
 import { decideListingReview } from "@/domains/compliance/review";
 import { submitListing } from "@/domains/listings/listings";
 import { FakeVisionProvider } from "@/domains/ai/fake-vision";
+import { loadPlatformConfig } from "@/config/platform";
+
+export const TEST_TWO_FACTOR_KEY = "test-two-factor-key-test-two-factor-key-0000";
 
 export function testDb(): Db {
   return createDb(process.env.TEST_DATABASE_URL!);
 }
 
 export function testDeps(db: Db, now?: () => Date): IdentityDeps & { mailer: MemoryMailer } {
-  return { db, mailer: new MemoryMailer(), appUrl: "http://test.local", now };
+  return {
+    db,
+    mailer: new MemoryMailer(),
+    appUrl: "http://test.local",
+    now,
+    twoFactorKey: TEST_TWO_FACTOR_KEY,
+    platform: loadPlatformConfig({ BETA_INVITE_REQUIRED: "false" }),
+  };
 }
 
 export function uniqueEmail(prefix = "user") {

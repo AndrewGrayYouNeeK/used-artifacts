@@ -64,6 +64,9 @@ async function UserMenu() {
           GM dashboard
         </Link>
       )}
+      <Link href="/feedback" className="text-stone-700 hover:text-stone-950">
+        Feedback
+      </Link>
       <Link href="/account" className="text-stone-700 hover:text-stone-950">
         {user.displayName}
       </Link>

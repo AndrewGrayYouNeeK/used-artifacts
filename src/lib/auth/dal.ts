@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { sha256Hex } from "@/lib/crypto";
 import { readSessionCookie } from "@/lib/auth/session";
+import { platform } from "@/config/platform";
 import type { UserRole } from "@/generated/prisma/enums";
 
 export interface CurrentUser {
@@ -11,6 +12,9 @@ export interface CurrentUser {
   email: string;
   displayName: string;
   role: UserRole;
+  sessionId: string;
+  /** This session was opened (or upgraded) with an authenticator code. */
+  twoFactorVerified: boolean;
 }
 
 /**
@@ -24,7 +28,9 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const session = await db.session.findUnique({
     where: { tokenHash: sha256Hex(token) },
     select: {
+      id: true,
       expiresAt: true,
+      twoFactorVerifiedAt: true,
       user: {
         select: { id: true, email: true, displayName: true, role: true, status: true },
       },
@@ -34,7 +40,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     return null;
   }
   const { id, email, displayName, role } = session.user;
-  return { id, email, displayName, role };
+  return { id, email, displayName, role, sessionId: session.id, twoFactorVerified: session.twoFactorVerifiedAt !== null };
 });
 
 export async function requireUser(): Promise<CurrentUser> {
@@ -43,9 +49,15 @@ export async function requireUser(): Promise<CurrentUser> {
   return user;
 }
 
+/** Staff sessions must have passed an authenticator code (BUILD_PLAN section 8). */
+function requireStaffTwoFactor(user: CurrentUser) {
+  if (platform.staffTwoFactorRequired && !user.twoFactorVerified) redirect("/account/security?required=1");
+}
+
 export async function requireOwner(): Promise<CurrentUser> {
   const user = await requireUser();
   if (user.role !== "OWNER") redirect("/");
+  requireStaffTwoFactor(user);
   return user;
 }
 
@@ -53,5 +65,6 @@ export async function requireOwner(): Promise<CurrentUser> {
 export async function requireStaff(): Promise<CurrentUser> {
   const user = await requireUser();
   if (user.role !== "OWNER" && user.role !== "MODERATOR") redirect("/");
+  requireStaffTwoFactor(user);
   return user;
 }

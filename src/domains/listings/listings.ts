@@ -20,6 +20,7 @@ import { hammingDistance, MAX_PHOTOS, type PreparedPhoto } from "./photos";
 import { analysisForSubmission, attachAnalysis } from "@/domains/ai/analyzer";
 import type { SuggestionField } from "@/domains/ai/output";
 import type { VisionProvider } from "@/domains/ai/vision";
+import { isPaused } from "@/domains/admin/kill-switches";
 
 export interface ListingDeps {
   db: Db;
@@ -110,7 +111,7 @@ export async function loadScreeningTerms(db: Db) {
 
 export type SubmitListingResult =
   | { ok: true; listingId: string; reviewId: string }
-  | { ok: false; reason: GateFailure | "NO_STOREFRONT" | "CATEGORY_UNAVAILABLE" | "PHOTOS_REQUIRED" }
+  | { ok: false; reason: GateFailure | "NO_STOREFRONT" | "CATEGORY_UNAVAILABLE" | "PHOTOS_REQUIRED" | "LISTINGS_PAUSED" }
   | { ok: false; reason: "INVALID"; issues: RuleIssue[] }
   | { ok: false; reason: "PROHIBITED"; matches: ScreeningMatch[] };
 
@@ -137,6 +138,7 @@ export async function submitListing(
   if (input.photos.length === 0 || input.photos.length > MAX_PHOTOS) return { ok: false, reason: "PHOTOS_REQUIRED" };
   const isAuction = s.format === "AUCTION";
   if (isAuction && !config.auctionsEnabled) return { ok: false, reason: "AUCTIONS_DISABLED" };
+  if (await isPaused(deps.db, "LISTINGS")) return { ok: false, reason: "LISTINGS_PAUSED" };
 
   const gate = await checkIdentityGate(deps.db, input.userId, "SELL");
   if (!gate.ok) return { ok: false, reason: gate.reason };

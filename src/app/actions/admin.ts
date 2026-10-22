@@ -12,6 +12,8 @@ import {
   type ManualEnforcementType,
 } from "@/domains/admin/enforcement";
 import { decideFrozenEarning } from "@/domains/growth/referrals";
+import { consumeSecondFactor, twoFactorStatus } from "@/domains/identity/two-factor";
+import { serverEnv } from "@/config/env";
 import { requireOwner, requireStaff } from "@/lib/auth/dal";
 import { verifyPassword } from "@/lib/auth/password";
 import { requestContext } from "@/lib/auth/session";
@@ -20,10 +22,16 @@ import { identityDeps } from "@/lib/identity-deps";
 
 const str = (formData: FormData, key: string) => String(formData.get(key) ?? "");
 
-/** Sensitive owner actions ask for the password again (a hijacked session alone isn't enough). */
-async function reauthenticated(userId: string, password: string): Promise<boolean> {
+/**
+ * Sensitive owner actions ask for the password again, plus a fresh
+ * authenticator code when two-factor is on (a hijacked session alone isn't enough).
+ */
+async function reauthenticated(userId: string, formData: FormData): Promise<boolean> {
+  const password = str(formData, "password");
   const user = await db.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
-  return Boolean(user?.passwordHash && password && (await verifyPassword(user.passwordHash, password)));
+  if (!user?.passwordHash || !password || !(await verifyPassword(user.passwordHash, password))) return false;
+  if (!(await twoFactorStatus(db, userId)).enabled) return true;
+  return (await consumeSecondFactor({ db, twoFactorKey: serverEnv().TWO_FACTOR_ENCRYPTION_KEY }, userId, str(formData, "code"))) !== null;
 }
 
 const isManualType = (v: string): v is ManualEnforcementType => (MANUAL_ENFORCEMENT_TYPES as readonly string[]).includes(v);
@@ -32,8 +40,8 @@ export async function enforceAction(_prev: FormState, formData: FormData): Promi
   const staff = await requireStaff();
   const type = str(formData, "type");
   if (!isManualType(type)) return { status: "error", message: "Choose an action." };
-  if (ACCOUNT_ACTIONS.has(type) && !(await reauthenticated(staff.id, str(formData, "password")))) {
-    return { status: "error", message: "Enter your password to confirm a suspension or ban." };
+  if (ACCOUNT_ACTIONS.has(type) && !(await reauthenticated(staff.id, formData))) {
+    return { status: "error", message: "Enter your password and authenticator code to confirm a suspension or ban." };
   }
   const days = Number(str(formData, "days"));
   const result = await takeEnforcementAction(
@@ -89,8 +97,8 @@ export async function enforceAction(_prev: FormState, formData: FormData): Promi
 export async function liftEnforcementFormAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const staff = await requireStaff();
   const action = await db.enforcementAction.findUnique({ where: { id: str(formData, "enforcementId") }, select: { type: true } });
-  if (action && ACCOUNT_ACTIONS.has(action.type) && !(await reauthenticated(staff.id, str(formData, "password")))) {
-    return { status: "error", message: "Enter your password to restore an account." };
+  if (action && ACCOUNT_ACTIONS.has(action.type) && !(await reauthenticated(staff.id, formData))) {
+    return { status: "error", message: "Enter your password and authenticator code to restore an account." };
   }
   const result = await liftEnforcementAction(
     identityDeps(),
@@ -152,8 +160,8 @@ export async function setUserRoleAction(_prev: FormState, formData: FormData): P
   const owner = await requireOwner();
   const role = str(formData, "role");
   if (role !== "USER" && role !== "MODERATOR") return { status: "error", message: "Choose a role." };
-  if (!(await reauthenticated(owner.id, str(formData, "password")))) {
-    return { status: "error", message: "Enter your password to change staff roles." };
+  if (!(await reauthenticated(owner.id, formData))) {
+    return { status: "error", message: "Enter your password and authenticator code to change staff roles." };
   }
   const result = await setUserRole({ db }, { actorId: owner.id, userId: str(formData, "userId"), role }, await requestContext());
   if (!result.ok) {

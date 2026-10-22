@@ -8,6 +8,7 @@ import { accounts, post } from "@/domains/payments/ledger";
 import type { PaymentsProvider } from "@/domains/payments/provider";
 import { applyBps } from "@/domains/pricing/pricing";
 import { raiseFraudSignal, strongLinksBetween } from "@/domains/trust/linkage";
+import { isPaused } from "@/domains/admin/kill-switches";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -347,6 +348,8 @@ export async function runReferralJobs(deps: ReferralJobDeps): Promise<ReferralJo
     });
   }
 
+  if (await isPaused(deps.db, "PAYOUTS")) return report;
+
   const payable = await deps.db.referralEarning.findMany({
     where: { status: "PAYABLE", payoutId: null },
     select: { id: true, amountCents: true, referral: { select: { referrerUserId: true } } },
@@ -412,6 +415,7 @@ export async function payoutEligibility(db: Db | Tx, userId: string): Promise<Pa
 export async function executeReferralPayout(deps: ReferralJobDeps, payoutId: string): Promise<boolean> {
   const payout = await deps.db.referralPayout.findUniqueOrThrow({ where: { id: payoutId } });
   if (payout.status !== "PENDING") return payout.status === "PAID";
+  if (await isPaused(deps.db, "PAYOUTS")) return false;
   const referrer = await deps.db.user.findUniqueOrThrow({ where: { id: payout.referrerUserId }, select: { status: true } });
   if (referrer.status !== "ACTIVE") {
     await deps.db.$transaction(async (tx) => {

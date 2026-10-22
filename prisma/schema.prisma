@@ -70,19 +70,30 @@ model User {
   gradingResultsGraded  GradingResult[]         @relation("InHouseGrader")
   auditEvents           AuditEvent[]
   aiAnalyses            AiAnalysis[]
+  twoFactor             TwoFactorCredential?
+  recoveryCodes         TwoFactorRecoveryCode[]
+  loginChallenges       LoginChallenge[]
+  betaInvitesCreated    BetaInvite[]            @relation("BetaInviteCreator")
+  betaInviteRedemption  BetaInviteRedemption?
+  killSwitchesUpdated   KillSwitch[]
+  feedback              Feedback[]              @relation("FeedbackAuthor")
+  feedbackHandled       Feedback[]              @relation("FeedbackHandler")
+  dailyReviews          DailyReview[]
 }
 
 /// Opaque session token lives in an httpOnly cookie; only its SHA-256 hash is stored.
 model Session {
-  id         String   @id @default(cuid())
-  userId     String
-  tokenHash  String   @unique
-  expiresAt  DateTime
-  createdAt  DateTime @default(now())
-  lastSeenAt DateTime @default(now())
-  ipHash     String?
-  userAgent  String?
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String    @id @default(cuid())
+  userId              String
+  tokenHash           String    @unique
+  expiresAt           DateTime
+  createdAt           DateTime  @default(now())
+  lastSeenAt          DateTime  @default(now())
+  ipHash              String?
+  userAgent           String?
+  /// Set when the session was opened (or upgraded) with a second factor.
+  twoFactorVerifiedAt DateTime?
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }
@@ -1307,4 +1318,151 @@ model AuditEvent {
   @@index([subjectType, subjectId])
   @@index([actorUserId])
   @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: closed beta (invites, kill switches, two-factor, feedback, daily review)
+// ---------------------------------------------------------------------------
+
+/// TOTP (RFC 6238). The secret is AES-256-GCM encrypted with TWO_FACTOR_ENCRYPTION_KEY.
+model TwoFactorCredential {
+  userId          String    @id
+  secretEncrypted String
+  /// Null until the user confirms a first code.
+  enabledAt       DateTime?
+  /// Highest 30-second step accepted, so a code can't be replayed.
+  lastUsedStep    Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Single-use backup codes; only hashes are stored.
+model TwoFactorRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Password accepted, second factor still owed. Short-lived and attempt-limited.
+model LoginChallenge {
+  id           String    @id @default(cuid())
+  userId       String
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  attempts     Int       @default(0)
+  usedAt       DateTime?
+  ipHash       String?
+  userAgent    String?
+  deviceIdHash String?
+  createdAt    DateTime  @default(now())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Owner-issued signup codes. Only the hash is stored; the code is shown once.
+model BetaInvite {
+  id          String                 @id @default(cuid())
+  codeHash    String                 @unique
+  /// Last 4 characters, so staff can tell codes apart.
+  codeHint    String
+  /// Who it's for (internal).
+  note        String
+  /// When set, only this email can redeem it.
+  email       String?
+  maxUses     Int                    @default(1)
+  useCount    Int                    @default(0)
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdById String
+  createdAt   DateTime               @default(now())
+  createdBy   User                   @relation("BetaInviteCreator", fields: [createdById], references: [id])
+  redemptions BetaInviteRedemption[]
+}
+
+model BetaInviteRedemption {
+  id        String     @id @default(cuid())
+  inviteId  String
+  userId    String     @unique
+  createdAt DateTime   @default(now())
+  invite    BetaInvite @relation(fields: [inviteId], references: [id])
+  user      User       @relation(fields: [userId], references: [id])
+
+  @@index([inviteId])
+}
+
+enum KillSwitchKey {
+  SIGNUPS
+  LISTINGS
+  CHECKOUT
+  BIDDING
+  PAYOUTS
+  AI_ANALYZER
+}
+
+/// Missing row = running. History lives in the audit log.
+model KillSwitch {
+  key         KillSwitchKey @id
+  paused      Boolean       @default(false)
+  reason      String?
+  updatedById String?
+  updatedAt   DateTime      @updatedAt
+  updatedBy   User?         @relation(fields: [updatedById], references: [id])
+}
+
+enum FeedbackCategory {
+  BUG
+  IDEA
+  TRUST_SAFETY
+  OTHER
+}
+
+enum FeedbackStatus {
+  OPEN
+  ACKNOWLEDGED
+  CLOSED
+}
+
+model Feedback {
+  id          String           @id @default(cuid())
+  userId      String
+  category    FeedbackCategory
+  message     String
+  pagePath    String?
+  status      FeedbackStatus   @default(OPEN)
+  staffNotes  String?
+  handledById String?
+  handledAt   DateTime?
+  createdAt   DateTime         @default(now())
+  user        User             @relation("FeedbackAuthor", fields: [userId], references: [id])
+  handledBy   User?            @relation("FeedbackHandler", fields: [handledById], references: [id])
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+/// One staff sign-off per UTC day on the trust-and-safety queues.
+model DailyReview {
+  id                String   @id @default(cuid())
+  day               DateTime @unique @db.Date
+  reviewedById      String
+  notes             String?
+  openSignals       Int
+  pendingCompliance Int
+  openFeedback      Int
+  createdAt         DateTime @default(now())
+  reviewedBy        User     @relation(fields: [reviewedById], references: [id])
+}
+
+/// Marks the staff digest email as sent for a UTC day (the unique day stops duplicates).
+model DailyDigest {
+  day        DateTime @id @db.Date
+  recipients Int
+  sentAt     DateTime @default(now())
 }

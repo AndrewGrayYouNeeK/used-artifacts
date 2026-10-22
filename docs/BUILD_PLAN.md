@@ -1,6 +1,6 @@
 # Used Artifacts — Build Plan
 
-Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phase 0 is done; Phase 1 (identity and compliance core) is built, see section 11. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
+Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phases 0 through 7 are built (sections 10 to 17); auctions are built but switched off. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
 
 ---
 
@@ -619,3 +619,43 @@ Roadmap item 3. Everything here is behind `AUCTIONS_ENABLED`, which stays **fals
 2. **L8 (counsel):** enforceability of strikes, bid voiding, and fee forfeiture in the Terms of Service.
 3. **Auction parameters:** the increment table, the 2-minute soft close, 2 strikes per year, 1 retraction per 90 days, second-chance price (the runner-up's maximum), and automatic relisting after 3 days are proposals.
 4. **Live updates:** the listing refreshes every 15 seconds. Tell us if you want live push before auctions turn on.
+
+## 17. Phase 7: closed beta (built)
+
+Roadmap item 9, plus the owner two-factor sign-in deferred from Phase 4 (section 8).
+
+**Invite-only signup** (`BETA_INVITE_REQUIRED=true`)
+- The owner creates invite codes at **Admin → Beta controls**: a note on who it's for, an optional email lock, a number of uses (1 to 1000), and an optional expiry (default 30 days). The code (like `J7ZM-VWW9-UQCY`, no look-alike characters) and a signup link are shown once; only a hash is stored. With an email lock, the invite can be emailed directly.
+- Signup needs a valid code. One database statement spends a use while checking uses left, revocation, expiry, and the email lock, so concurrent signups can't overspend an invite. Each account records the invite it used. The owner can revoke an unused code; accounts already created are unaffected.
+- **First deploy:** the email in `PROPRIETOR_EMAIL` can sign up without an invite until the Proprietor badge is assigned, so Andrew can create his own account.
+- The database refuses edits to an invite's code or terms, deletes, and anything but one-at-a-time use counting; redemptions are append-only.
+
+**Kill switches** (Admin → Beta controls)
+- New signups, new listings, checkout (buy now and auction payment), bidding, payouts (seller transfers and referral payouts), and the AI photo analyzer.
+- Any staff member can pause (an emergency brake, with a reason); only the owner can resume. Every change is audited and shown on the overview.
+- Paused payouts keep the money held and go out automatically on the next scheduled run after resuming. A paused analyzer records "analysis unavailable" (HIGH uncertainty) and staff review the listing as usual.
+
+**Staff two-factor sign-in** (`STAFF_TWO_FACTOR_REQUIRED=true`)
+- Authenticator-app codes (TOTP, RFC 6238, 30 seconds, 6 digits, one step of clock drift), set up at **Account → Sign-in security** with a QR code. Any member can turn it on; staff can't turn it off.
+- `/admin` and every staff action need a session opened with a code. Staff without it are sent to set it up.
+- Sign-in becomes two steps: password, then code. Each code works once (replays are refused, and the database only lets the accepted step move forward). A sign-in attempt allows 5 wrong codes and expires after 5 minutes.
+- 10 single-use recovery codes (hashed) are shown once at setup and can be regenerated. Secrets are encrypted at rest with `TWO_FACTOR_ENCRYPTION_KEY`.
+- Suspend, ban, restoring an account, and changing staff roles now need the password **and** a current code.
+- Lost phone and recovery codes: `npm run two-factor:reset` on the server (needs a written reason; audited; signs the user out everywhere). There is no in-app reset.
+
+**Feedback channel:** a **Feedback** link for signed-in members (bug, idea, trust or safety concern, other; 10 per day). Staff triage it at Admin → Feedback (acknowledge or close, with notes).
+
+**Daily fraud review**
+- Trust and safety starts with today's queue counts (open signals, compliance queue, disputes, fraud holds, retrying transfers, retraction requests, open feedback, paused switches) and a **Sign off today's review** button. One sign-off per UTC day, permanent, with the counts snapshotted. The overview warns when today's review isn't done.
+- The scheduled job emails every staff member a digest once a day after `DAILY_DIGEST_HOUR_UTC` (13:00 UTC = 8 or 9 a.m. Eastern), including whether yesterday was signed off.
+
+**Compliance review on 100% of listings** was already in place from Phase 1 (`BETA_FULL_REVIEW`).
+
+**Audit events:** `beta.invite_created`, `beta.invite_redeemed`, `beta.invite_revoked`, `platform.kill_switch_paused`, `platform.kill_switch_resumed`, `user.two_factor_enabled`, `user.two_factor_disabled`, `user.two_factor_recovery_codes_regenerated`, `user.two_factor_recovery_code_used`, `user.two_factor_reset_console`, `user.login` (now records whether a code was used), `feedback.submitted`, `feedback.updated`, `trust.daily_review_recorded`.
+
+**Needs Andrew's decision or action**
+1. **Secrets:** add `TWO_FACTOR_ENCRYPTION_KEY` (32+ random characters; rotating it means every staff member sets up their authenticator again) and `PROPRIETOR_EMAIL`.
+2. **First sign-in:** sign up with `PROPRIETOR_EMAIL`, run `npm run proprietor:assign`, then set up your authenticator and **store the recovery codes offline**.
+3. **Invite policy:** how many invites, single-use or shared codes, and the default 30-day expiry.
+4. **Digest time:** 13:00 UTC by default; change `DAILY_DIGEST_HOUR_UTC` if you want it earlier or later.
+5. **Moderators:** a second staff account is still needed to approve your own listings (section 11, item 6). Each moderator sets up two-factor on first visit.

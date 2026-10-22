@@ -17,6 +17,11 @@ describe("platform config", () => {
     expect(loadPlatformConfig({})).toMatchObject({ auctionSoftCloseMinutes: 2, auctionSellerDecisionDays: 3 });
   });
 
+  it("keeps the closed-beta gates on by default", () => {
+    expect(loadPlatformConfig({})).toMatchObject({ betaInviteRequired: true, staffTwoFactorRequired: true, dailyDigestHourUtc: 13 });
+    expect(loadPlatformConfig({ BETA_INVITE_REQUIRED: "false" }).betaInviteRequired).toBe(false);
+  });
+
   it("enables antiques via config", () => {
     const cfg = loadPlatformConfig({ ENABLED_VERTICALS: "artifact, antique" });
     expect(isVerticalEnabled("ANTIQUE", cfg)).toBe(true);

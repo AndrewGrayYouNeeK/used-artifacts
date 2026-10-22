@@ -7,6 +7,7 @@ import { checkIdentityGate } from "@/domains/identity/verification/verification"
 import type { Order, OrderStatus } from "@/generated/prisma/client";
 import { clock, econ, platformConfig, type OrdersDeps } from "./deps";
 import { nextStatus, type OrderEvent } from "./state-machine";
+import { isPaused } from "@/domains/admin/kill-switches";
 
 type Actor = Pick<AuditInput, "actorUserId" | "actorType" | "ipHash">;
 
@@ -168,6 +169,7 @@ const MAX_PROVIDER_ATTEMPTS = 10;
 export async function executeTransfer(deps: OrdersDeps, transferId: string): Promise<boolean> {
   const transfer = await deps.db.transfer.findUniqueOrThrow({ where: { id: transferId }, include: { order: true } });
   if (transfer.status !== "PENDING" || transfer.attempts >= MAX_PROVIDER_ATTEMPTS) return transfer.status === "PAID";
+  if (await isPaused(deps.db, "PAYOUTS")) return false;
   const payment = await deps.db.payment.findFirst({
     where: { orderId: transfer.orderId, status: { in: ["SUCCEEDED", "PARTIALLY_REFUNDED"] }, stripeChargeId: { not: null } },
   });

@@ -5,5 +5,12 @@ import { getMailer } from "@/lib/email/mailer";
 import type { IdentityDeps } from "@/domains/identity/accounts";
 
 export function identityDeps(): IdentityDeps {
-  return { db, mailer: getMailer(), appUrl: serverEnv().APP_URL };
+  const env = serverEnv();
+  return {
+    db,
+    mailer: getMailer(),
+    appUrl: env.APP_URL,
+    twoFactorKey: env.TWO_FACTOR_ENCRYPTION_KEY,
+    ownerBootstrapEmail: process.env.PROPRIETOR_EMAIL || undefined,
+  };
 }

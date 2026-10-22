@@ -7,6 +7,8 @@ export function Field({
   autoComplete,
   errors,
   hint,
+  defaultValue,
+  inputMode,
 }: {
   label: string;
   name: string;
@@ -14,6 +16,8 @@ export function Field({
   autoComplete?: string;
   errors?: string[];
   hint?: string;
+  defaultValue?: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
 }) {
   return (
     <label className="block space-y-1.5">
@@ -22,6 +26,8 @@ export function Field({
         name={name}
         type={type}
         autoComplete={autoComplete}
+        defaultValue={defaultValue}
+        inputMode={inputMode}
         required
         className="block w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm outline-none focus:border-stone-500 focus:ring-2 focus:ring-stone-200"
       />

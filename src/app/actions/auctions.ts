@@ -65,6 +65,8 @@ export async function placeBidAction(_prev: FormState, formData: FormData): Prom
       return { status: "error", message: "You can't bid on your own item." };
     case "SELF_DEALING":
       return { status: "error", message: "This bid can't be accepted. Contact support if you think this is a mistake." };
+    case "BIDDING_PAUSED":
+      return { status: "error", message: "Bidding is paused for a moment while we sort something out. Please try again later." };
     default: {
       const exhaustive: never = reason;
       throw new Error(`Unhandled bid failure: ${String(exhaustive)}`);
@@ -118,10 +120,18 @@ export async function payAuctionAction(_prev: FormState, formData: FormData): Pr
   const user = await requireUser();
   const result = await payAuctionOrder(auctionDeps(), { buyerUserId: user.id, buyerEmail: user.email, orderId: str(formData, "orderId") });
   if (result.ok) redirect(result.url);
-  return {
-    status: "error",
-    message: result.reason === "NOT_PAYABLE" ? "The payment window for this order has closed." : "Order not found.",
-  };
+  switch (result.reason) {
+    case "NOT_PAYABLE":
+      return { status: "error", message: "The payment window for this order has closed." };
+    case "NOT_FOUND":
+      return { status: "error", message: "Order not found." };
+    case "CHECKOUT_PAUSED":
+      return { status: "error", message: "Checkout is paused for a moment. Your payment window is unchanged; please try again shortly." };
+    default: {
+      const exhaustive: never = result.reason;
+      throw new Error(`Unhandled auction payment failure: ${String(exhaustive)}`);
+    }
+  }
 }
 
 export async function sellerAuctionDecisionAction(_prev: FormState, formData: FormData): Promise<FormState> {

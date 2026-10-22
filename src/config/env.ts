@@ -18,6 +18,8 @@ const ServerEnvSchema = z.object({
   IP_HASH_SECRET: devDefault("dev-only-ip-hash-secret-change-me-0000000000"),
   EMAIL_FROM: z.string().default("Used Artifacts <no-reply@usedartifacts.com>"),
   POSTMARK_SERVER_TOKEN: z.string().optional(),
+  /** Encrypts authenticator (TOTP) secrets at rest. Rotating it invalidates every enrolled authenticator. */
+  TWO_FACTOR_ENCRYPTION_KEY: devDefault("dev-only-two-factor-encryption-key-0000000000"),
 });
 
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;

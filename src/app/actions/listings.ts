@@ -149,6 +149,8 @@ export async function submitListingAction(_prev: FormState, formData: FormData):
     case "BLOCKED":
     case "AUCTIONS_DISABLED":
       return { status: "error", message: gateMessage[result.reason] };
+    case "LISTINGS_PAUSED":
+      return { status: "error", message: "New listings are paused for a moment. Your draft wasn't saved; please try again later." };
     default: {
       const exhaustive: never = result;
       throw new Error(`Unhandled listing failure: ${JSON.stringify(exhaustive)}`);
@@ -282,6 +284,8 @@ export async function suggestFromPhotosAction(_prev: SuggestState, formData: For
         return { status: "error", message: "You've used today's photo analyses. Try again tomorrow, or submit without suggestions." };
       case "NO_PHOTOS":
         return { status: "error", message: "Add photos first." };
+      case "PAUSED":
+        return { status: "error", message: "Photo suggestions are paused right now. You can still submit; staff review every listing." };
       default: {
         const exhaustive: never = result.reason;
         throw new Error(`Unhandled suggestion failure: ${String(exhaustive)}`);

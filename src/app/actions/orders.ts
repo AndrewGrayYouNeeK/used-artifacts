@@ -47,6 +47,8 @@ export async function buyNowAction(_prev: FormState, formData: FormData): Promis
       return { status: "error", message: "You can't buy your own item." };
     case "SELF_DEALING":
       return { status: "error", message: "This purchase can't be completed. Contact support if you think this is a mistake." };
+    case "CHECKOUT_PAUSED":
+      return { status: "error", message: "Checkout is paused for a moment while we sort something out. Please try again later." };
     default: {
       const exhaustive: never = result.reason;
       throw new Error(`Unhandled checkout failure: ${String(exhaustive)}`);

@@ -20,6 +20,7 @@ import {
   SHILL_VOID_SCORE,
   type Standing,
 } from "./engine";
+import { isPaused } from "@/domains/admin/kill-switches";
 
 export interface AuctionDeps extends OrdersDeps {
   /** Outbid, win, and non-payment notices; sent after commit. */
@@ -98,7 +99,7 @@ async function activeStrikes(db: Tx | OrdersDeps["db"], userId: string, now: Dat
 
 export type PlaceBidResult =
   | { ok: true; bidId: string; leading: boolean; priceCents: number; endsAt: Date; reserveMet: boolean; voided: boolean }
-  | { ok: false; reason: GateFailure | "AUCTION_CLOSED" | "OWN_LISTING" | "SELF_DEALING" | "ACCOUNT_RESTRICTED" | "BIDDING_RESTRICTED" }
+  | { ok: false; reason: GateFailure | "AUCTION_CLOSED" | "OWN_LISTING" | "SELF_DEALING" | "ACCOUNT_RESTRICTED" | "BIDDING_RESTRICTED" | "BIDDING_PAUSED" }
   | { ok: false; reason: "BID_TOO_LOW"; minimumCents: number }
   | { ok: false; reason: "BID_TOO_HIGH"; maximumCents: number };
 
@@ -116,6 +117,7 @@ export async function placeBid(
   const config = platformConfig(deps);
   const gate = await checkIdentityGate(deps.db, input.bidderUserId, "BID", config);
   if (!gate.ok) return { ok: false, reason: gate.reason };
+  if (await isPaused(deps.db, "BIDDING")) return { ok: false, reason: "BIDDING_PAUSED" };
   if (!Number.isInteger(input.maxCents) || input.maxCents <= 0) return { ok: false, reason: "BID_TOO_LOW", minimumCents: 1 };
   if (input.maxCents > MAX_BID_CENTS) return { ok: false, reason: "BID_TOO_HIGH", maximumCents: MAX_BID_CENTS };
 
@@ -441,7 +443,7 @@ export async function closeAuction(deps: AuctionDeps, auctionId: string): Promis
   return result.outcome;
 }
 
-export type PayAuctionResult = { ok: true; url: string } | { ok: false; reason: "NOT_FOUND" | "NOT_PAYABLE" };
+export type PayAuctionResult = { ok: true; url: string } | { ok: false; reason: "NOT_FOUND" | "NOT_PAYABLE" | "CHECKOUT_PAUSED" };
 
 /** Opens checkout for an auction or second-chance order inside its payment window. */
 export async function payAuctionOrder(
@@ -455,6 +457,7 @@ export async function payAuctionOrder(
   });
   if (!order || order.buyerUserId !== input.buyerUserId || order.source === "FIXED") return { ok: false, reason: "NOT_FOUND" };
   if (order.status !== "CREATED" || !order.paymentDueAt || order.paymentDueAt <= now) return { ok: false, reason: "NOT_PAYABLE" };
+  if (await isPaused(deps.db, "CHECKOUT")) return { ok: false, reason: "CHECKOUT_PAUSED" };
   for (const p of order.payments) {
     await deps.payments.expireCheckout(p.checkoutSessionId).catch(() => undefined);
     await deps.db.payment.update({ where: { id: p.id }, data: { status: "FAILED" } });

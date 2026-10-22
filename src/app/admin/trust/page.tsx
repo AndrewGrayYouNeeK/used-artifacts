@@ -2,6 +2,8 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { decideFrozenEarningAction, reviewFraudSignalAction } from "@/app/actions/admin";
 import { decideRetractionAction, voidBidsAction } from "@/app/actions/auctions";
+import { recordDailyReviewAction } from "@/app/actions/beta";
+import { recentDailyReviews, staffQueueCounts, utcDay } from "@/domains/admin/daily-review";
 import { platform } from "@/config/platform";
 import { ActionForm, inputClass } from "@/components/action-form";
 import { signalAccounts } from "@/domains/admin/signals";
@@ -69,9 +71,54 @@ async function Trust() {
     }),
   ]);
   const accounts = await signalAccounts(db, signals);
+  const reviews = await recentDailyReviews(db);
+  const counts = await staffQueueCounts(db);
+  const today = utcDay(new Date()).getTime();
+  const doneToday = reviews.some((r) => r.day.getTime() === today);
 
   return (
     <>
+      <section className={`rounded-2xl border p-6 shadow-sm ${doneToday ? "border-stone-200 bg-white" : "border-amber-300 bg-amber-50"}`}>
+        <h2 className="font-serif text-lg font-semibold">Daily review</h2>
+        <p className="mt-1 text-sm text-stone-600">
+          During the beta someone on staff looks at every open signal, the compliance queue, disputes, holds, and feedback once a
+          day, then signs off here.
+        </p>
+        <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+          {[
+            ["Open signals", counts.openSignals, "/admin/trust"],
+            ["Compliance queue", counts.pendingCompliance, "/admin/compliance"],
+            ["Open disputes", counts.openDisputes, "/admin/orders"],
+            ["Fraud holds", counts.fraudHolds, "/admin/orders"],
+            ["Transfers retrying", counts.stuckTransfers, "/admin/orders"],
+            ["Retraction requests", counts.pendingRetractions, "/admin/trust"],
+            ["Open feedback", counts.openFeedback, "/admin/feedback"],
+            ["Paused switches", counts.pausedSwitches.length, "/admin/beta"],
+          ].map(([name, value, href]) => (
+            <Link key={String(name)} href={String(href)} className="rounded-lg border border-stone-200 bg-white px-3 py-2 hover:border-stone-400">
+              <dt className="text-xs text-stone-500">{name}</dt>
+              <dd className="text-lg font-semibold">{value}</dd>
+            </Link>
+          ))}
+        </dl>
+        {doneToday ? (
+          <p className="mt-4 text-sm text-emerald-800">Today&apos;s review is signed off.</p>
+        ) : (
+          <ActionForm action={recordDailyReviewAction} submitLabel="Sign off today's review" className="mt-4 flex flex-wrap items-start gap-2">
+            <input name="notes" placeholder="Notes (optional)" className={`${inputClass} flex-1`} />
+          </ActionForm>
+        )}
+        {reviews.length > 0 && (
+          <ul className="mt-4 space-y-1 text-xs text-stone-500">
+            {reviews.map((r) => (
+              <li key={r.id}>
+                {r.day.toISOString().slice(0, 10)}: {r.reviewedBy.displayName} · {r.openSignals} signals, {r.pendingCompliance} in compliance,{" "}
+                {r.openFeedback} feedback{r.notes ? ` · ${r.notes}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
         <h2 className="font-serif text-lg font-semibold">Open fraud signals</h2>
         <p className="mt-1 text-sm text-stone-500">

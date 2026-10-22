@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   EmailSchema,
   SignupSchema,
+  completeTwoFactorLogin,
   login,
   logout,
   requestPasswordReset,
@@ -18,9 +19,12 @@ import { db } from "@/lib/db";
 import { identityDeps } from "@/lib/identity-deps";
 import {
   clearSessionCookie,
+  clearTwoFactorChallengeCookie,
   readSessionCookie,
+  readTwoFactorChallengeCookie,
   requestContext,
   setSessionCookie,
+  setTwoFactorChallengeCookie,
 } from "@/lib/auth/session";
 
 export type FormState =
@@ -36,6 +40,7 @@ export async function signupAction(_prev: FormState, formData: FormData): Promis
     displayName: str(formData, "displayName"),
     password: str(formData, "password"),
     referralCode: str(formData, "ref") || undefined,
+    inviteCode: str(formData, "invite") || undefined,
   });
   if (!parsed.success) {
     return {
@@ -46,7 +51,24 @@ export async function signupAction(_prev: FormState, formData: FormData): Promis
   }
   const result = await signup(identityDeps(), parsed.data, await requestContext());
   if (!result.ok) {
-    return { status: "error", message: "An account with that email already exists. Try signing in." };
+    switch (result.reason) {
+      case "EMAIL_TAKEN":
+        return { status: "error", message: "An account with that email already exists. Try signing in." };
+      case "INVITE_REQUIRED":
+        return { status: "error", message: "Used Artifacts is invite-only during the beta. Enter your invite code.", fieldErrors: { invite: ["Required during the beta."] } };
+      case "INVITE_INVALID":
+        return {
+          status: "error",
+          message: "That invite code isn't valid. It may be used up, expired, or meant for a different email.",
+          fieldErrors: { invite: ["Check the code and the email it was sent to."] },
+        };
+      case "SIGNUPS_PAUSED":
+        return { status: "error", message: "New signups are paused for a moment. Please try again later." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled signup failure: ${String(exhaustive)}`);
+      }
+    }
   }
   return {
     status: "success",
@@ -82,12 +104,37 @@ export async function loginAction(_prev: FormState, formData: FormData): Promise
         };
       case "ACCOUNT_DISABLED":
         return { status: "error", message: "This account is suspended. Contact support." };
+      case "TWO_FACTOR_REQUIRED":
+        await setTwoFactorChallengeCookie(result.challengeToken, result.challengeExpiresAt);
+        redirect("/login/two-factor");
       default: {
-        const exhaustive: never = result.reason;
-        throw new Error(`Unhandled login failure: ${String(exhaustive)}`);
+        const exhaustive: never = result;
+        throw new Error(`Unhandled login failure: ${JSON.stringify(exhaustive)}`);
       }
     }
   }
+  await setSessionCookie(result.sessionToken, result.expiresAt);
+  redirect("/account");
+}
+
+export async function twoFactorLoginAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const challengeToken = await readTwoFactorChallengeCookie();
+  if (!challengeToken) return { status: "error", message: "Your sign-in timed out. Enter your email and password again." };
+  const result = await completeTwoFactorLogin(identityDeps(), { challengeToken, code: str(formData, "code") }, await requestContext());
+  if (!result.ok) {
+    switch (result.reason) {
+      case "INVALID_CODE":
+        return { status: "error", message: "That code didn't work. Use the current code from your authenticator app, or a recovery code." };
+      case "CHALLENGE_EXPIRED":
+        await clearTwoFactorChallengeCookie();
+        return { status: "error", message: "Your sign-in timed out or had too many wrong codes. Enter your email and password again." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled two-factor failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  await clearTwoFactorChallengeCookie();
   await setSessionCookie(result.sessionToken, result.expiresAt);
   redirect("/account");
 }

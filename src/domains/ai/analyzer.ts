@@ -6,6 +6,7 @@ import type { RequestContext } from "@/domains/identity/accounts";
 import { screeningTerms } from "@/domains/compliance/screening";
 import { applyGuardrails, unavailableAnalysis, type GuardrailCategory, type GuardrailContext } from "./guardrails";
 import { SUGGESTION_FIELDS, type GuardedAnalysis, type SuggestionField } from "./output";
+import { isPaused } from "@/domains/admin/kill-switches";
 import { PROMPT_VERSION, buildVisionRequest, type VisionImage, type VisionProvider } from "./vision";
 
 export interface AnalyzerDeps {
@@ -72,13 +73,18 @@ async function runAndRecord(
   let raw: unknown = null;
   let guarded: GuardedAnalysis;
   let error: string | null = null;
-  try {
-    raw = await withTimeout(deps.vision.analyze(buildVisionRequest(images, gctx.categories, selected)), deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    guarded = applyGuardrails(raw, gctx);
-    if (guarded.flags.includes("INVALID_OUTPUT")) error = "The model returned output that failed validation.";
-  } catch (err) {
+  if (await isPaused(deps.db, "AI_ANALYZER")) {
     guarded = unavailableAnalysis(gctx);
-    error = String(err instanceof Error ? err.message : err).slice(0, 500);
+    error = "The analyzer is paused by staff.";
+  } else {
+    try {
+      raw = await withTimeout(deps.vision.analyze(buildVisionRequest(images, gctx.categories, selected)), deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      guarded = applyGuardrails(raw, gctx);
+      if (guarded.flags.includes("INVALID_OUTPUT")) error = "The model returned output that failed validation.";
+    } catch (err) {
+      guarded = unavailableAnalysis(gctx);
+      error = String(err instanceof Error ? err.message : err).slice(0, 500);
+    }
   }
   return record(
     deps,
@@ -152,7 +158,7 @@ async function record(
   return { ...guarded, id: row.id, error };
 }
 
-export type SuggestResult = { ok: true; analysis: RecordedAnalysis } | { ok: false; reason: "RATE_LIMITED" | "NO_PHOTOS" };
+export type SuggestResult = { ok: true; analysis: RecordedAnalysis } | { ok: false; reason: "RATE_LIMITED" | "NO_PHOTOS" | "PAUSED" };
 
 /** A pre-submission run whose suggestions the seller may accept into the form. */
 export async function suggestFromPhotos(
@@ -161,6 +167,7 @@ export async function suggestFromPhotos(
   ctx: RequestContext = {},
 ): Promise<SuggestResult> {
   if (input.photos.length === 0) return { ok: false, reason: "NO_PHOTOS" };
+  if (await isPaused(deps.db, "AI_ANALYZER")) return { ok: false, reason: "PAUSED" };
   const now = deps.now ? deps.now() : new Date();
   const recent = await deps.db.aiAnalysis.count({
     where: { requestedByUserId: input.userId, createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } },

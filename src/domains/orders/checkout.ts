@@ -7,12 +7,13 @@ import { priceBreakdown } from "@/domains/pricing/pricing";
 import { checkSelfDealing, linkByDevice, raiseFraudSignal } from "@/domains/trust/linkage";
 import { clock, econ, platformConfig, type OrdersDeps } from "./deps";
 import { transition } from "./escrow";
+import { isPaused } from "@/domains/admin/kill-switches";
 
 export type StartCheckoutResult =
   | { ok: true; orderId: string; url: string }
   | {
       ok: false;
-      reason: "LISTING_UNAVAILABLE" | "SELLER_NOT_READY" | "LISTING_RESERVED" | "OWN_LISTING" | "SELF_DEALING";
+      reason: "LISTING_UNAVAILABLE" | "SELLER_NOT_READY" | "LISTING_RESERVED" | "OWN_LISTING" | "SELF_DEALING" | "CHECKOUT_PAUSED";
     };
 
 /**
@@ -28,6 +29,7 @@ export async function startCheckout(
 ): Promise<StartCheckoutResult> {
   const now = clock(deps);
   const config = econ(deps);
+  if (await isPaused(deps.db, "CHECKOUT")) return { ok: false, reason: "CHECKOUT_PAUSED" };
   const listing = await deps.db.listing.findUnique({
     where: { id: input.listingId },
     include: { storefront: true, category: { select: { vertical: true } } },

@@ -48,6 +48,16 @@ PROPRIETOR_EMAIL=you@example.com npm run proprietor:assign
 
 This promotes the account to OWNER and permanently assigns the Proprietor badge. Database triggers block any later reassignment, deletion, or demotion.
 
+Signup is invite-only (`BETA_INVITE_REQUIRED=true`). On a fresh deploy, set `PROPRIETOR_EMAIL` first: that one email can sign up without an invite until the Proprietor badge is assigned. After that, issue invite codes from `/admin/beta`.
+
+### Staff two-factor sign-in
+
+The owner and moderators must sign in with an authenticator app to open `/admin` (`STAFF_TWO_FACTOR_REQUIRED=true`). The first visit to `/admin` sends you to `/account/security` to scan a QR code and save 10 recovery codes. If someone loses both their phone and their recovery codes, confirm who they are out of band, then run on the server:
+
+```bash
+RESET_EMAIL=person@example.com RESET_REASON="Confirmed by phone call on 2026-11-02" npm run two-factor:reset
+```
+
 ## Checks
 
 ```bash

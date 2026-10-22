@@ -7,7 +7,15 @@ import { AuthCard, Field, FormMessage, SubmitButton } from "@/components/form";
 
 const initial: FormState = { status: "idle" };
 
-export function SignupForm({ referral }: { referral: { code: string; referrerName: string } | null }) {
+export function SignupForm({
+  referral,
+  invite,
+  inviteRequired,
+}: {
+  referral: { code: string; referrerName: string } | null;
+  invite: string;
+  inviteRequired: boolean;
+}) {
   const [state, action, pending] = useActionState(signupAction, initial);
   const fieldErrors = state.status === "error" ? state.fieldErrors : undefined;
 
@@ -22,6 +30,16 @@ export function SignupForm({ referral }: { referral: { code: string; referrerNam
               <input type="hidden" name="ref" value={referral.code} />
               <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Invited by {referral.referrerName}.</p>
             </>
+          )}
+          {inviteRequired && (
+            <Field
+              label="Invite code"
+              name="invite"
+              autoComplete="off"
+              defaultValue={invite}
+              errors={fieldErrors?.invite}
+              hint="The beta is invite-only. Your code came from the Used Artifacts team."
+            />
           )}
           <Field label="Display name" name="displayName" autoComplete="nickname" errors={fieldErrors?.displayName} />
           <Field label="Email" name="email" type="email" autoComplete="email" errors={fieldErrors?.email} />

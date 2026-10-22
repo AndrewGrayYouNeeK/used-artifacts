@@ -22,6 +22,15 @@ const PlatformEnvSchema = z.object({
     .transform((v) => v === "true"),
   AUCTION_SOFT_CLOSE_MINUTES: z.coerce.number().int().min(0).max(60).default(2),
   AUCTION_SELLER_DECISION_DAYS: z.coerce.number().int().min(1).max(14).default(3),
+  BETA_INVITE_REQUIRED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  STAFF_TWO_FACTOR_REQUIRED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  DAILY_DIGEST_HOUR_UTC: z.coerce.number().int().min(0).max(23).default(13),
 });
 
 export interface PlatformConfig {
@@ -35,6 +44,12 @@ export interface PlatformConfig {
   auctionSoftCloseMinutes: number;
   /** After a winner fails to pay, the seller has this long to pick second chance or relist; then it relists automatically. */
   auctionSellerDecisionDays: number;
+  /** Closed beta: signing up needs an owner-issued invite code. */
+  betaInviteRequired: boolean;
+  /** Owner and moderators must sign in with an authenticator code to use /admin. */
+  staffTwoFactorRequired: boolean;
+  /** The staff digest email goes out on the first scheduled run at or after this hour. */
+  dailyDigestHourUtc: number;
 }
 
 export function loadPlatformConfig(
@@ -49,6 +64,9 @@ export function loadPlatformConfig(
     auctionsEnabled: parsed.AUCTIONS_ENABLED,
     auctionSoftCloseMinutes: parsed.AUCTION_SOFT_CLOSE_MINUTES,
     auctionSellerDecisionDays: parsed.AUCTION_SELLER_DECISION_DAYS,
+    betaInviteRequired: parsed.BETA_INVITE_REQUIRED,
+    staffTwoFactorRequired: parsed.STAFF_TWO_FACTOR_REQUIRED,
+    dailyDigestHourUtc: parsed.DAILY_DIGEST_HOUR_UTC,
   };
 }
 

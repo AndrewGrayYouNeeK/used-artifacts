@@ -4,6 +4,7 @@ import { serverEnv } from "@/config/env";
 import { generateToken, hmacHex } from "@/lib/crypto";
 
 export const SESSION_COOKIE = "ua_session";
+const TWO_FACTOR_CHALLENGE_COOKIE = "ua_2fa_challenge";
 const DEVICE_COOKIE = "ua_device";
 const DEVICE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 2;
 
@@ -23,6 +24,25 @@ export async function readSessionCookie(): Promise<string | undefined> {
 
 export async function clearSessionCookie() {
   (await cookies()).delete(SESSION_COOKIE);
+}
+
+/** Holds the sign-in challenge between the password step and the authenticator-code step. */
+export async function setTwoFactorChallengeCookie(token: string, expiresAt: Date) {
+  (await cookies()).set(TWO_FACTOR_CHALLENGE_COOKIE, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/login",
+    expires: expiresAt,
+  });
+}
+
+export async function readTwoFactorChallengeCookie(): Promise<string | undefined> {
+  return (await cookies()).get(TWO_FACTOR_CHALLENGE_COOKIE)?.value;
+}
+
+export async function clearTwoFactorChallengeCookie() {
+  (await cookies()).delete({ name: TWO_FACTOR_CHALLENGE_COOKIE, path: "/login" });
 }
 
 /** Long-lived random device id; only its keyed hash is stored (linkage signals). */

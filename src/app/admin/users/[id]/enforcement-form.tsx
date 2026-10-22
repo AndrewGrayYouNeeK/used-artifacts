@@ -102,10 +102,16 @@ export function EnforcementForm({
         <textarea name="reason" required minLength={5} rows={3} className={inputClass} />
       </label>
       {accountAction && (
-        <label className="block space-y-1.5">
-          <span className="text-sm font-medium">Your password, to confirm</span>
-          <input name="password" type="password" autoComplete="current-password" required className={inputClass} />
-        </label>
+        <>
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium">Your password, to confirm</span>
+            <input name="password" type="password" autoComplete="current-password" required className={inputClass} />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium">Authenticator code</span>
+            <input name="code" autoComplete="one-time-code" inputMode="numeric" className={inputClass} />
+          </label>
+        </>
       )}
     </ActionForm>
   );

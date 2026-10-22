@@ -11,17 +11,28 @@ import {
 import { writeAuditEvent } from "@/domains/audit/audit";
 import { recordReferral } from "@/domains/growth/referrals";
 import { linkByDevice } from "@/domains/trust/linkage";
+import { isPaused } from "@/domains/admin/kill-switches";
+import { redeemBetaInvite } from "@/domains/growth/beta-invites";
+import { consumeSecondFactor } from "./two-factor";
+import { platform, type PlatformConfig } from "@/config/platform";
 
 export const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 export const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 export const PASSWORD_RESET_MAX_PER_HOUR = 3;
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+export const LOGIN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+export const LOGIN_CHALLENGE_MAX_ATTEMPTS = 5;
 
 export interface IdentityDeps {
   db: Db;
   mailer: Mailer;
   appUrl: string;
   now?: () => Date;
+  /** TWO_FACTOR_ENCRYPTION_KEY; needed to sign in accounts that have two-factor on. */
+  twoFactorKey?: string;
+  platform?: PlatformConfig;
+  /** PROPRIETOR_EMAIL: may sign up without an invite until the Proprietor is assigned (first deploy). */
+  ownerBootstrapEmail?: string;
 }
 
 export interface RequestContext {
@@ -47,6 +58,8 @@ export const SignupSchema = z.object({
   password: PasswordSchema,
   /** Share code from a referral link; unknown codes are ignored. */
   referralCode: z.string().trim().max(32).optional(),
+  /** Owner-issued beta invite; required while BETA_INVITE_REQUIRED is on. */
+  inviteCode: z.string().trim().max(64).optional(),
 });
 
 export type SignupInput = z.infer<typeof SignupSchema>;
@@ -74,22 +87,36 @@ async function sendVerificationEmail(
   });
 }
 
-export type SignupResult = { ok: true } | { ok: false; reason: "EMAIL_TAKEN" };
+export type SignupResult = { ok: true } | { ok: false; reason: "EMAIL_TAKEN" | "SIGNUPS_PAUSED" | "INVITE_REQUIRED" | "INVITE_INVALID" };
+
+class InviteRejected extends Error {}
 
 export async function signup(
   deps: IdentityDeps,
   input: SignupInput,
   ctx: RequestContext = {},
 ): Promise<SignupResult> {
+  if (await isPaused(deps.db, "SIGNUPS")) return { ok: false, reason: "SIGNUPS_PAUSED" };
+  const bootstrap =
+    Boolean(deps.ownerBootstrapEmail) &&
+    deps.ownerBootstrapEmail?.trim().toLowerCase() === input.email &&
+    (await deps.db.proprietor.count()) === 0;
+  const inviteRequired = (deps.platform ?? platform).betaInviteRequired && !bootstrap;
+  if (inviteRequired && !input.inviteCode) return { ok: false, reason: "INVITE_REQUIRED" };
   const existing = await deps.db.user.findUnique({ where: { email: input.email } });
   if (existing) {
     return { ok: false, reason: "EMAIL_TAKEN" };
   }
   const passwordHash = await hashPassword(input.password);
+  const now = clock(deps);
   const user = await deps.db.$transaction(async (tx) => {
     const created = await tx.user.create({
       data: { email: input.email, displayName: input.displayName, passwordHash },
     });
+    if (inviteRequired && input.inviteCode) {
+      const redeemed = await redeemBetaInvite(tx, { code: input.inviteCode, userId: created.id, email: input.email, now });
+      if (!redeemed) throw new InviteRejected();
+    }
     await writeAuditEvent(tx, {
       actorUserId: created.id,
       actorType: "USER",
@@ -100,7 +127,11 @@ export async function signup(
     });
     if (input.referralCode) await recordReferral(tx, { refereeUserId: created.id, code: input.referralCode, ipHash: ctx.ipHash });
     return created;
+  }).catch((err: unknown) => {
+    if (err instanceof InviteRejected) return null;
+    throw err;
   });
+  if (!user) return { ok: false, reason: "INVITE_INVALID" };
   await sendVerificationEmail(deps, user);
   return { ok: true };
 }
@@ -148,7 +179,42 @@ export async function verifyEmail(deps: IdentityDeps, token: string): Promise<Ve
 
 export type LoginResult =
   | { ok: true; userId: string; sessionToken: string; expiresAt: Date }
-  | { ok: false; reason: "INVALID_CREDENTIALS" | "EMAIL_NOT_VERIFIED" | "ACCOUNT_DISABLED" };
+  | { ok: false; reason: "INVALID_CREDENTIALS" | "EMAIL_NOT_VERIFIED" | "ACCOUNT_DISABLED" }
+  | { ok: false; reason: "TWO_FACTOR_REQUIRED"; challengeToken: string; challengeExpiresAt: Date };
+
+async function openSession(
+  deps: IdentityDeps,
+  userId: string,
+  ctx: RequestContext,
+  twoFactorVerified: boolean,
+): Promise<{ sessionToken: string; expiresAt: Date }> {
+  const now = clock(deps);
+  const sessionToken = generateToken();
+  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
+  await deps.db.$transaction(async (tx) => {
+    await tx.session.create({
+      data: {
+        userId,
+        tokenHash: sha256Hex(sessionToken),
+        expiresAt,
+        ipHash: ctx.ipHash ?? null,
+        userAgent: ctx.userAgent?.slice(0, 512) ?? null,
+        twoFactorVerifiedAt: twoFactorVerified ? now : null,
+      },
+    });
+    if (ctx.deviceIdHash) await linkByDevice(tx, userId, ctx.deviceIdHash);
+    await writeAuditEvent(tx, {
+      actorUserId: userId,
+      actorType: "USER",
+      action: "user.login",
+      subjectType: "User",
+      subjectId: userId,
+      after: { twoFactor: twoFactorVerified },
+      ipHash: ctx.ipHash,
+    });
+  });
+  return { sessionToken, expiresAt };
+}
 
 export async function login(
   deps: IdentityDeps,
@@ -181,29 +247,76 @@ export async function login(
     return { ok: false, reason: "EMAIL_NOT_VERIFIED" };
   }
 
-  const sessionToken = generateToken();
-  const expiresAt = new Date(clock(deps).getTime() + SESSION_TTL_MS);
-  await deps.db.$transaction(async (tx) => {
-    await tx.session.create({
+  const credential = await deps.db.twoFactorCredential.findUnique({ where: { userId: user.id }, select: { enabledAt: true } });
+  if (credential?.enabledAt) {
+    const challengeToken = generateToken();
+    const challengeExpiresAt = new Date(clock(deps).getTime() + LOGIN_CHALLENGE_TTL_MS);
+    await deps.db.loginChallenge.create({
       data: {
         userId: user.id,
-        tokenHash: sha256Hex(sessionToken),
-        expiresAt,
+        tokenHash: sha256Hex(challengeToken),
+        expiresAt: challengeExpiresAt,
         ipHash: ctx.ipHash ?? null,
         userAgent: ctx.userAgent?.slice(0, 512) ?? null,
+        deviceIdHash: ctx.deviceIdHash ?? null,
       },
     });
-    if (ctx.deviceIdHash) await linkByDevice(tx, user.id, ctx.deviceIdHash);
-    await writeAuditEvent(tx, {
-      actorUserId: user.id,
-      actorType: "USER",
-      action: "user.login",
-      subjectType: "User",
-      subjectId: user.id,
-      ipHash: ctx.ipHash,
-    });
-  });
+    return { ok: false, reason: "TWO_FACTOR_REQUIRED", challengeToken, challengeExpiresAt };
+  }
+  const { sessionToken, expiresAt } = await openSession(deps, user.id, ctx, false);
   return { ok: true, userId: user.id, sessionToken, expiresAt };
+}
+
+export type CompleteTwoFactorResult =
+  | { ok: true; userId: string; sessionToken: string; expiresAt: Date }
+  | { ok: false; reason: "CHALLENGE_EXPIRED" | "INVALID_CODE" };
+
+/**
+ * Second step of sign-in for accounts with two-factor on. The challenge is
+ * single-use and allows a few wrong codes before it is burned.
+ */
+export async function completeTwoFactorLogin(
+  deps: IdentityDeps,
+  input: { challengeToken: string; code: string },
+  ctx: RequestContext = {},
+): Promise<CompleteTwoFactorResult> {
+  if (!deps.twoFactorKey) throw new Error("completeTwoFactorLogin needs twoFactorKey");
+  const now = clock(deps);
+  const challenge = await deps.db.loginChallenge.findUnique({
+    where: { tokenHash: sha256Hex(input.challengeToken) },
+    include: { user: { select: { status: true } } },
+  });
+  if (!challenge || challenge.usedAt || challenge.expiresAt <= now || challenge.attempts >= LOGIN_CHALLENGE_MAX_ATTEMPTS || challenge.user.status !== "ACTIVE") {
+    return { ok: false, reason: "CHALLENGE_EXPIRED" };
+  }
+  const counted = await deps.db.loginChallenge.updateMany({
+    where: { id: challenge.id, usedAt: null, attempts: { lt: LOGIN_CHALLENGE_MAX_ATTEMPTS } },
+    data: { attempts: { increment: 1 } },
+  });
+  if (counted.count !== 1) return { ok: false, reason: "CHALLENGE_EXPIRED" };
+  const method = await consumeSecondFactor({ db: deps.db, twoFactorKey: deps.twoFactorKey, now: deps.now }, challenge.userId, input.code);
+  if (!method) {
+    await deps.db.loginEvent.create({
+      data: { userId: challenge.userId, succeeded: false, ipHash: ctx.ipHash ?? null, deviceIdHash: ctx.deviceIdHash ?? null },
+    });
+    return { ok: false, reason: "INVALID_CODE" };
+  }
+  const claimed = await deps.db.loginChallenge.updateMany({ where: { id: challenge.id, usedAt: null }, data: { usedAt: now } });
+  if (claimed.count !== 1) return { ok: false, reason: "CHALLENGE_EXPIRED" };
+  const { sessionToken, expiresAt } = await openSession(deps, challenge.userId, ctx, true);
+  if (method === "RECOVERY_CODE") {
+    await deps.db.$transaction((tx) =>
+      writeAuditEvent(tx, {
+        actorUserId: challenge.userId,
+        actorType: "USER",
+        action: "user.two_factor_recovery_code_used",
+        subjectType: "User",
+        subjectId: challenge.userId,
+        ipHash: ctx.ipHash,
+      }),
+    );
+  }
+  return { ok: true, userId: challenge.userId, sessionToken, expiresAt };
 }
 
 export async function logout(deps: Pick<IdentityDeps, "db">, sessionToken: string) {
