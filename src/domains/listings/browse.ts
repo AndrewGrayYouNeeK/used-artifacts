@@ -16,6 +16,7 @@ export async function browseListings(db: Db, query: BrowseQuery, config: Platfor
   const terms = (query.q ?? "").trim().split(/\s+/).filter(Boolean).slice(0, 6);
   const where: Prisma.ListingWhereInput = {
     status: "LIVE",
+    storefront: { status: "ACTIVE" },
     category: {
       vertical: { in: config.enabledVerticals },
       ...(query.category ? { OR: [{ slug: query.category }, { parent: { slug: query.category } }] } : {}),

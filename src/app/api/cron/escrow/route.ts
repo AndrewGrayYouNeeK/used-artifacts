@@ -1,11 +1,15 @@
 import { connection } from "next/server";
+import { liftExpiredSuspensions } from "@/domains/admin/enforcement";
 import { runEscrowJobs } from "@/domains/orders/jobs";
 import { authorizedCron } from "@/lib/cron";
 import { ordersDeps } from "@/lib/payments/orders-deps";
 
-/** Escrow timers (payment window, ship-by deadline, auto-release, transfer/refund retries). */
+/** Escrow timers (payment window, ship-by deadline, auto-release, transfer/refund retries) and suspension expiry. */
 export async function GET(request: Request) {
   await connection();
   if (!authorizedCron(request)) return new Response("Unauthorized", { status: 401 });
-  return Response.json(await runEscrowJobs(ordersDeps()));
+  const deps = ordersDeps();
+  const escrow = await runEscrowJobs(deps);
+  const suspensionsEnded = await liftExpiredSuspensions(deps);
+  return Response.json({ ...escrow, suspensionsEnded });
 }

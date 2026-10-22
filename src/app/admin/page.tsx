@@ -3,12 +3,12 @@ import Link from "next/link";
 import { UserIdentity } from "@/components/user-identity";
 import { economics, splitSale } from "@/config/economics";
 import { platform } from "@/config/platform";
+import { gmMetrics, whatSells } from "@/domains/admin/metrics";
 import { verifyAuditChain } from "@/domains/audit/audit";
 import { getPublicIdentity } from "@/domains/identity/public-identity";
 import { formatUsd } from "@/domains/pricing/pricing";
 import { requireOwner } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
-import { SendResetButton } from "./send-reset-button";
 
 export default function AdminPage() {
   return (
@@ -22,26 +22,14 @@ export default function AdminPage() {
 
 async function Dashboard() {
   const owner = await requireOwner();
-  const [identity, users, events, chain, openListingReviews, openIdentityReviews] = await Promise.all([
+  const [identity, metrics, sells, chain, openIdentityReviews] = await Promise.all([
     getPublicIdentity(db, owner.id),
-    db.user.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 50,
-      select: {
-        id: true,
-        email: true,
-        displayName: true,
-        role: true,
-        status: true,
-        emailVerifiedAt: true,
-        createdAt: true,
-      },
-    }),
-    db.auditEvent.findMany({ orderBy: { seq: "desc" }, take: 25 }),
+    gmMetrics(db),
+    whatSells(db),
     verifyAuditChain(db),
-    db.complianceReview.count({ where: { status: "OPEN" } }),
     db.identityVerification.count({ where: { status: "NEEDS_REVIEW" } }),
   ]);
+  const openSignals = metrics.trust.openSignals.reduce((n, s) => n + s.count, 0);
 
   return (
     <>
@@ -56,86 +44,112 @@ async function Dashboard() {
             on the server. It can only be done once.
           </p>
         )}
+        <p className={`mt-4 text-xs font-medium ${chain.ok ? "text-emerald-700" : "text-red-700"}`}>
+          {chain.ok
+            ? `Audit hash chain intact (${chain.checked} events)`
+            : `Audit hash chain BROKEN at event #${chain.firstBrokenSeq}. Investigate before anything else.`}
+        </p>
       </section>
 
-      <Link
-        href="/admin/compliance"
-        className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white p-6 shadow-sm hover:border-stone-400"
-      >
-        <div>
-          <h2 className="font-serif text-lg font-semibold">Compliance queue</h2>
-          <p className="mt-1 text-sm text-stone-500">
-            Every beta listing is reviewed before it goes live. Identity matches need a decision too.
-          </p>
-        </div>
-        <span className="text-sm font-medium">
-          {openListingReviews} listing{openListingReviews === 1 ? "" : "s"} · {openIdentityReviews} identit
-          {openIdentityReviews === 1 ? "y" : "ies"} →
-        </span>
-      </Link>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <QueueLink
+          href="/admin/compliance"
+          title="Compliance queue"
+          detail={`${metrics.compliance.open} listing(s) · ${openIdentityReviews} identity match(es)`}
+        />
+        <QueueLink href="/admin/trust" title="Trust & safety" detail={`${openSignals} open signal(s) · ${metrics.trust.activeSuspensions} suspended`} />
+        <QueueLink href="/admin/orders" title="Orders and escrow" detail={`${metrics.sales.openDisputes} open dispute(s) · ${formatUsd(metrics.sales.heldCents)} held`} />
+      </div>
+
+      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <h2 className="font-serif text-lg font-semibold">Marketplace health</h2>
+        <dl className="mt-4 grid gap-4 sm:grid-cols-4">
+          <Metric label="GMV, last 30 days" value={formatUsd(metrics.sales.last30.gmvCents)} sub={`${metrics.sales.last30.orders} released order(s)`} />
+          <Metric label="Platform fees, last 30 days" value={formatUsd(metrics.sales.last30.platformFeeCents)} sub={`${formatUsd(metrics.sales.allTime.platformFeeCents)} all time`} />
+          <Metric label="Platform revenue (ledger)" value={formatUsd(metrics.sales.platformRevenueCents)} sub="after referral payouts" />
+          <Metric label="Dispute rate, 90 days" value={percent(metrics.sales.disputeRate90)} sub={`${metrics.sales.openDisputes} open`} />
+          <Metric label="Users" value={String(metrics.users.total)} sub={`${metrics.users.newLast30} new in 30 days`} />
+          <Metric label="Verified sellers" value={String(metrics.users.verifiedSellers)} sub={`${metrics.storefronts.payoutsEnabled}/${metrics.storefronts.total} storefronts can take payouts`} />
+          <Metric label="Live listings" value={String(metrics.listings.live)} sub={`${metrics.listings.sold} sold · ${metrics.listings.removed} removed`} />
+          <Metric
+            label="Compliance, last 30 days"
+            value={percent(metrics.compliance.approvalRate30)}
+            sub={`approved · median ${metrics.compliance.medianHoursToDecision === null ? "-" : `${metrics.compliance.medianHoursToDecision.toFixed(1)}h`} to decide`}
+          />
+          <Metric label="AI red-flag rate, 30 days" value={percent(metrics.compliance.aiRedFlagRate30)} sub="submissions held by the analyzer" />
+          <Metric label="Moderators" value={String(metrics.users.moderators)} sub="the owner is separate" />
+          <Metric label="Suspended / banned" value={`${metrics.users.suspended} / ${metrics.users.banned}`} sub={`${metrics.trust.bansAllTime} ban(s) all time`} />
+          <Metric
+            label="Open fraud signals"
+            value={String(openSignals)}
+            sub={metrics.trust.openSignals.map((s) => `${s.detector.toLowerCase().replaceAll("_", " ")} ${s.count}`).join(" · ") || "none"}
+          />
+        </dl>
+      </section>
+
+      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <h2 className="font-serif text-lg font-semibold">What sells</h2>
+        <p className="mt-1 text-sm text-stone-500">
+          Sell-through by category from every closed listing (sold, expired, withdrawn or removed). This feeds the grading
+          plan: categories that sell well are where authentication partners matter first.
+        </p>
+        {sells.length === 0 ? (
+          <p className="mt-4 text-sm text-stone-500">No closed listings yet.</p>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-xs uppercase tracking-wide text-stone-500">
+                <tr>
+                  <th className="py-2 pr-4">Category</th>
+                  <th className="py-2 pr-4">Sold / closed</th>
+                  <th className="py-2 pr-4">Sell-through</th>
+                  <th className="py-2 pr-4">Median days to sell</th>
+                  <th className="py-2 pr-4">Avg sale</th>
+                  <th className="py-2">Avg ask</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {sells.map((r) => (
+                  <tr key={r.categoryId}>
+                    <td className="py-2 pr-4">{r.categoryName}</td>
+                    <td className="py-2 pr-4">
+                      {r.sold} / {r.closed}
+                    </td>
+                    <td className="py-2 pr-4">{percent(r.sellThrough)}</td>
+                    <td className="py-2 pr-4">{r.medianDaysToSell === null ? "-" : r.medianDaysToSell.toFixed(1)}</td>
+                    <td className="py-2 pr-4">{r.avgSaleCents === null ? "-" : formatUsd(r.avgSaleCents)}</td>
+                    <td className="py-2">{r.avgAskCents === null ? "-" : formatUsd(r.avgAskCents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <EconomicsPanel />
-
-      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
-        <h2 className="font-serif text-lg font-semibold">Users</h2>
-        <p className="mt-1 text-sm text-stone-500">
-          Staff can only send the standard reset email. Passwords are never set or shown here.
-        </p>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase tracking-wide text-stone-500">
-              <tr>
-                <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Email</th>
-                <th className="py-2 pr-4">Role</th>
-                <th className="py-2 pr-4">Verified</th>
-                <th className="py-2 pr-4">Joined</th>
-                <th className="py-2" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone-100">
-              {users.map((u) => (
-                <tr key={u.id}>
-                  <td className="py-2 pr-4">{u.displayName}</td>
-                  <td className="py-2 pr-4">{u.email}</td>
-                  <td className="py-2 pr-4">{u.role.toLowerCase()}</td>
-                  <td className="py-2 pr-4">{u.emailVerifiedAt ? "yes" : "no"}</td>
-                  <td className="py-2 pr-4">{u.createdAt.toISOString().slice(0, 10)}</td>
-                  <td className="py-2 text-right">
-                    {u.emailVerifiedAt && <SendResetButton userId={u.id} />}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
-        <div className="flex items-baseline justify-between">
-          <h2 className="font-serif text-lg font-semibold">Audit log</h2>
-          <span
-            className={`text-xs font-medium ${chain.ok ? "text-emerald-700" : "text-red-700"}`}
-          >
-            {chain.ok
-              ? `Hash chain intact (${chain.checked} events)`
-              : `Hash chain BROKEN at event #${chain.firstBrokenSeq}`}
-          </span>
-        </div>
-        <ul className="mt-4 divide-y divide-stone-100 font-mono text-xs">
-          {events.map((e) => (
-            <li key={e.id} className="flex gap-4 py-1.5">
-              <span className="text-stone-400">#{e.seq.toString()}</span>
-              <span className="text-stone-500">{e.at.toISOString().replace("T", " ").slice(0, 19)}</span>
-              <span className="font-semibold">{e.action}</span>
-              <span className="text-stone-500">
-                {e.actorType.toLowerCase()} → {e.subjectType}:{e.subjectId?.slice(0, 8)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
     </>
+  );
+}
+
+const percent = (r: number | null) => (r === null ? "-" : `${(r * 100).toFixed(r * 100 < 10 ? 1 : 0)}%`);
+
+function Metric({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div className="rounded-xl bg-stone-50 p-4">
+      <dt className="text-xs uppercase tracking-wide text-stone-500">{label}</dt>
+      <dd className="mt-1 text-xl font-semibold">{value}</dd>
+      <dd className="mt-0.5 text-xs text-stone-500">{sub}</dd>
+    </div>
+  );
+}
+
+function QueueLink({ href, title, detail }: { href: string; title: string; detail: string }) {
+  return (
+    <Link href={href} className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm hover:border-stone-400">
+      <h2 className="font-serif font-semibold">{title} →</h2>
+      <p className="mt-1 text-sm text-stone-500">{detail}</p>
+    </Link>
   );
 }
 

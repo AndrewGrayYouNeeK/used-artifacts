@@ -39,7 +39,7 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
       where: { id },
       include: {
         category: { include: { parent: true } },
-        storefront: { select: { name: true, slug: true, payoutsEnabled: true } },
+        storefront: { select: { name: true, slug: true, payoutsEnabled: true, status: true } },
         photos: { orderBy: { sortOrder: "asc" } },
         provenanceStatements: {
           orderBy: { signedAt: "desc" },
@@ -54,6 +54,7 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
   const isSeller = viewer?.id === listing.sellerUserId;
   const isStaff = viewer?.role === "OWNER" || viewer?.role === "MODERATOR";
   if (listing.status !== "LIVE" && listing.status !== "SOLD" && !isSeller && !isStaff) notFound();
+  if (listing.storefront.status !== "ACTIVE" && !isStaff) notFound();
 
   if (listing.status === "LIVE" && !isSeller) after(() => recordListingView(db, listing.id));
   const seller = await getPublicIdentity(db, listing.sellerUserId);

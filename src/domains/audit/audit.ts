@@ -87,27 +87,67 @@ export interface ChainVerification {
   firstBrokenSeq: bigint | null;
 }
 
+const VERIFY_BATCH = 2000;
+
+/** Recomputes every hash in order, in batches, so the check scales with the log. */
 export async function verifyAuditChain(db: Db): Promise<ChainVerification> {
-  const events = await db.auditEvent.findMany({ orderBy: { seq: "asc" } });
   let prevHash = GENESIS_HASH;
-  for (const e of events) {
-    const expected = computeAuditHash(prevHash, {
-      id: e.id,
-      at: e.at.toISOString(),
-      actorUserId: e.actorUserId,
-      actorType: e.actorType,
-      action: e.action,
-      subjectType: e.subjectType,
-      subjectId: e.subjectId,
-      before: e.before ?? null,
-      after: e.after ?? null,
-      ipHash: e.ipHash,
-      requestId: e.requestId,
+  let checked = 0;
+  let afterSeq: bigint | null = null;
+  for (;;) {
+    const events: Awaited<ReturnType<typeof db.auditEvent.findMany>> = await db.auditEvent.findMany({
+      where: afterSeq === null ? {} : { seq: { gt: afterSeq } },
+      orderBy: { seq: "asc" },
+      take: VERIFY_BATCH,
     });
-    if (e.prevHash !== prevHash || e.hash !== expected) {
-      return { ok: false, checked: events.length, firstBrokenSeq: e.seq };
+    for (const e of events) {
+      const expected = computeAuditHash(prevHash, {
+        id: e.id,
+        at: e.at.toISOString(),
+        actorUserId: e.actorUserId,
+        actorType: e.actorType,
+        action: e.action,
+        subjectType: e.subjectType,
+        subjectId: e.subjectId,
+        before: e.before ?? null,
+        after: e.after ?? null,
+        ipHash: e.ipHash,
+        requestId: e.requestId,
+      });
+      checked++;
+      if (e.prevHash !== prevHash || e.hash !== expected) return { ok: false, checked, firstBrokenSeq: e.seq };
+      prevHash = e.hash;
     }
-    prevHash = e.hash;
+    if (events.length < VERIFY_BATCH) return { ok: true, checked, firstBrokenSeq: null };
+    afterSeq = events[events.length - 1].seq;
   }
-  return { ok: true, checked: events.length, firstBrokenSeq: null };
+}
+
+export interface AuditQuery {
+  action?: string;
+  subjectType?: string;
+  subjectId?: string;
+  actorUserId?: string;
+  /** Page backwards from this sequence number. */
+  beforeSeq?: bigint;
+  limit?: number;
+}
+
+/** Read-only search for the GM audit-log viewer, newest first. */
+export async function searchAuditEvents(db: Db, query: AuditQuery) {
+  const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
+  const events = await db.auditEvent.findMany({
+    where: {
+      ...(query.action ? { action: { startsWith: query.action } } : {}),
+      ...(query.subjectType ? { subjectType: query.subjectType } : {}),
+      ...(query.subjectId ? { subjectId: query.subjectId } : {}),
+      ...(query.actorUserId ? { actorUserId: query.actorUserId } : {}),
+      ...(query.beforeSeq !== undefined ? { seq: { lt: query.beforeSeq } } : {}),
+    },
+    orderBy: { seq: "desc" },
+    take: limit + 1,
+    include: { actor: { select: { displayName: true, email: true } } },
+  });
+  const page = events.slice(0, limit);
+  return { events: page, nextBeforeSeq: events.length > limit ? page[page.length - 1].seq : null };
 }

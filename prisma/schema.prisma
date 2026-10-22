@@ -57,6 +57,8 @@ model User {
   linksB                AccountLink[]           @relation("AccountLinkB")
   enforcementActions    EnforcementAction[]     @relation("EnforcementSubject")
   enforcementsTaken     EnforcementAction[]     @relation("EnforcementActor")
+  enforcementsLifted    EnforcementAction[]     @relation("EnforcementLifter")
+  fraudSignalsReviewed  FraudSignal[]           @relation("FraudSignalReviewer")
   referralsMade         Referral[]              @relation("Referrer")
   referredBy            Referral?               @relation("Referee")
   badges                UserBadge[]
@@ -311,6 +313,7 @@ model Listing {
   dailyStats           ListingDailyStat[]
   priceChanges         ListingPriceChange[]
   outcome              ListingOutcome?
+  enforcementActions   EnforcementAction[]
 
   @@index([storefrontId, status])
   @@index([categoryId, status])
@@ -801,15 +804,19 @@ enum FraudSignalStatus {
 }
 
 model FraudSignal {
-  id          String              @id @default(cuid())
-  subjectType String
-  subjectId   String
-  detector    FraudDetector
-  score       Int
-  evidence    Json
-  status      FraudSignalStatus   @default(OPEN)
-  createdAt   DateTime            @default(now())
-  actions     EnforcementAction[]
+  id           String              @id @default(cuid())
+  subjectType  String
+  subjectId    String
+  detector     FraudDetector
+  score        Int
+  evidence     Json
+  status       FraudSignalStatus   @default(OPEN)
+  createdAt    DateTime            @default(now())
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNotes  String?
+  reviewedBy   User?               @relation("FraudSignalReviewer", fields: [reviewedById], references: [id])
+  actions      EnforcementAction[]
 
   @@index([status, createdAt])
 }
@@ -830,12 +837,27 @@ model EnforcementAction {
   type          EnforcementType
   reason        String
   fraudSignalId String?
+  /// LISTING_REMOVED: the listing taken down.
+  listingId     String?
+  /// BADGE_REVOKED: the badge award revoked.
+  userBadgeId   String?
   actorId       String
+  /// Suspensions end automatically at this time (escrow cron).
   expiresAt     DateTime?
+  /// Set when the action ends: expiry, or staff overturning it on appeal.
+  liftedAt      DateTime?
+  liftedById    String?
+  liftReason    String?
   createdAt     DateTime        @default(now())
   user          User            @relation("EnforcementSubject", fields: [userId], references: [id])
   actor         User            @relation("EnforcementActor", fields: [actorId], references: [id])
+  liftedBy      User?           @relation("EnforcementLifter", fields: [liftedById], references: [id])
   fraudSignal   FraudSignal?    @relation(fields: [fraudSignalId], references: [id])
+  listing       Listing?        @relation(fields: [listingId], references: [id])
+  userBadge     UserBadge?      @relation(fields: [userBadgeId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([type, liftedAt, expiresAt])
 }
 
 model ItemFingerprint {
@@ -914,14 +936,15 @@ model Badge {
 }
 
 model UserBadge {
-  id            String    @id @default(cuid())
-  userId        String
-  badgeId       String
-  awardedAt     DateTime  @default(now())
-  revokedAt     DateTime?
-  basisSnapshot Json?
-  user          User      @relation(fields: [userId], references: [id])
-  badge         Badge     @relation(fields: [badgeId], references: [id])
+  id                 String              @id @default(cuid())
+  userId             String
+  badgeId            String
+  awardedAt          DateTime            @default(now())
+  revokedAt          DateTime?
+  basisSnapshot      Json?
+  user               User                @relation(fields: [userId], references: [id])
+  badge              Badge               @relation(fields: [badgeId], references: [id])
+  enforcementActions EnforcementAction[]
 
   @@unique([userId, badgeId])
 }

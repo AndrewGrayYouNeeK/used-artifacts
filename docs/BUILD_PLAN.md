@@ -533,3 +533,26 @@ Roadmap item 8.
 2. **Model choice:** `AI_VISION_MODEL` defaults to `claude-sonnet-4-5`. Pick the model you want to pay for; each analysis sends up to 8 photos.
 3. **Daily suggestion quota:** 30 runs per seller per day (`DAILY_SUGGESTION_LIMIT`). Submissions are always analyzed.
 4. **Over-triggering is deliberate:** words like "Archaic", "Woodland", or tribe names that are also common words ("Creek", "Crow") force HIGH uncertainty. Tell us if that's too noisy once real data arrives.
+
+## 14. Phase 4: owner GM dashboard (built)
+
+Roadmap item 10.
+
+**Pages** (`/admin/*`, with a shared nav; moderators see everything except the overview and the audit log)
+- **Overview (owner):** the Proprietor card, audit hash-chain status, queue shortcuts (compliance, trust and safety, orders), marketplace health (GMV and platform fees for 30 days and all time, platform revenue from the ledger, held funds, 90-day dispute rate, users, verified sellers, payout-ready storefronts, live/sold/removed listings, compliance approval rate and median hours to decision, AI red-flag rate, suspended and banned accounts, open fraud signals by detector), the **"what sells" report** (sell-through, median days to sell, average sale and ask by category, from `ListingOutcome`; this is the Grading Stage 1 report), and the fee economics.
+- **Users:** search by email, name, storefront, or ID, and filter by status and role. Each user page shows identity-check status, badges, storefront, listings, purchases and sales, open fraud signals, linked accounts, recent sign-in attempts, enforcement history, and audit events about and by the account. Staff can only **send the standard reset email**; no page sets or shows a password.
+- **Listings:** browse by status with a one-step "remove listing" (a recorded enforcement action).
+- **Trust and safety:** open fraud signals (highest score first) with the accounts involved and the evidence, confirm or dismiss with notes, and restricted accounts.
+- **Audit log (owner):** filter by action prefix, subject, and actor, page backwards through history, and expand any event to see its before and after snapshots, actor, IP hash, and hash. Chain verification runs in batches, so it scales.
+
+**Enforcement** (`src/domains/admin/enforcement.ts`)
+- Warning, remove a listing, revoke a badge, suspend (1 to 365 days), ban. Each is stored permanently (the database refuses deletes and edits; an action can only be lifted, once, with a reason), audited, and **emailed to the user with the reason and how to appeal**.
+- Suspend and ban are **owner-only and need the owner's password again**. Suspension signs the user out, blocks sign-in, and hides their storefront and listings from browse. A ban also removes their live and pending listings (except ones with an order in progress), closes the storefront, and supersedes any open suspension.
+- Suspensions end automatically (`/api/cron/escrow` also runs `liftExpiredSuspensions`). Staff can lift any action on appeal; badges are restored, removed listings stay removed (the seller can resubmit).
+- Taking action from a fraud signal confirms it. Signals can also be confirmed or dismissed with notes.
+- The owner account can never be restricted (a database trigger refuses it), and staff can't act on themselves.
+- **Roles:** only the owner makes or removes moderators, with the password again. OWNER is never granted here (the Proprietor is assigned once, by script).
+
+**Audit events:** `enforcement.issued`, `enforcement.lifted`, `enforcement.expired`, `fraud.signal_confirmed`, `fraud.signal_dismissed`, `user.role_changed`.
+
+**Not in this phase:** owner two-factor sign-in (TOTP), required by section 8, ships with the closed-beta hardening in Phase 7. Until then, sensitive owner actions are protected by password re-entry.
