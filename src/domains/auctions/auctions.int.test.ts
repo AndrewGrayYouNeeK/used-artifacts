@@ -30,6 +30,7 @@ import {
   voidBids,
   type AuctionDeps,
 } from "./auctions";
+import { computeStanding } from "./engine";
 
 const db = testDb();
 afterAll(() => db.$disconnect());
@@ -387,5 +388,42 @@ describe("retractions and withdrawal", () => {
     const second = await liveAuction(clock);
     await bid(deps, second.auction.id, (await verifiedBidder()).id, 2_000);
     expect(await withdrawListing({ db }, { sellerUserId: second.seller.id, listingId: second.listingId })).toEqual({ ok: false, reason: "NOT_WITHDRAWABLE" });
+  });
+});
+
+describe("auction load", () => {
+  it("keeps one consistent standing under a burst of concurrent bids", async () => {
+    const clock = { now: Date.now() };
+    const deps = makeDeps(clock);
+    const { auction } = await liveAuction(clock, { startingBid: 1_000 });
+    const bidders = await Promise.all(Array.from({ length: 30 }, () => verifiedBidder()));
+    const maxes = bidders.flatMap((b, i) => [1, 2, 3].map((round) => ({ bidder: b, maxCents: auction.startingBidCents + 100 * (i * 3 + round) * 7 })));
+    for (let i = maxes.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [maxes[i], maxes[j]] = [maxes[j], maxes[i]];
+    }
+
+    const started = performance.now();
+    const results = await Promise.allSettled(maxes.map((m) => bid(deps, auction.id, m.bidder.id, m.maxCents)));
+    const elapsedMs = performance.now() - started;
+
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toEqual([]);
+    const outcomes = results.map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof bid>>>).value);
+    for (const o of outcomes) if (!o.ok) expect(o.reason).toBe("BID_TOO_LOW");
+    const accepted = outcomes.filter((o) => o.ok);
+    expect(accepted.length).toBeGreaterThan(0);
+
+    const after = await db.auction.findUniqueOrThrow({ where: { id: auction.id } });
+    const bids = await db.bid.findMany({ where: { auctionId: auction.id } });
+    expect(bids).toHaveLength(accepted.length);
+    expect(after.bidCount).toBe(bids.length);
+    const standing = computeStanding(bids, after);
+    const top = Math.max(...maxes.map((m) => m.maxCents));
+    expect(standing.leader?.maxCents).toBe(top);
+    expect(after.currentHighBidId).toBe(standing.leader?.bidId);
+    expect(after.currentPriceCents).toBe(standing.priceCents);
+    for (const b of bids) expect(b.amountCents).toBeGreaterThanOrEqual(b.priceBeforeCents);
+    expect(elapsedMs).toBeLessThan(30_000);
   });
 });

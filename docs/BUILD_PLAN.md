@@ -1,6 +1,6 @@
 # Used Artifacts — Build Plan
 
-Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phases 0 through 7 are built (sections 10 to 17); auctions are built but switched off. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
+Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phases 0 through 7 and Phase 9 are built (sections 10 to 18); auctions are built but switched off. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
 
 ---
 
@@ -344,7 +344,7 @@ Notes:
 - partner authentication badges on high-value pieces, and sales-outcome data capture;
 - the owner dashboard and the audit log.
 
-**Behind a flag / out:** auctions (pending L1), circle-trade graph detection (signals are collected; reviewers act on them manually during beta), the antiques vertical, in-house rubric grading (Stage 2), and MUSEUM_GRADE.
+**Behind a flag / out:** auctions (pending L1), circle-trade graph detection (runs nightly and freezes credit, but nothing is enforced automatically: reviewers act on its signals by hand during beta), the antiques vertical, in-house rubric grading (Stage 2), and MUSEUM_GRADE.
 
 ### 6.2 Grading roadmap (roadmap item 11, revised by Andrew)
 
@@ -659,3 +659,29 @@ Roadmap item 9, plus the owner two-factor sign-in deferred from Phase 4 (section
 3. **Invite policy:** how many invites, single-use or shared codes, and the default 30-day expiry.
 4. **Digest time:** 13:00 UTC by default; change `DAILY_DIGEST_HOUR_UTC` if you want it earlier or later.
 5. **Moderators:** a second staff account is still needed to approve your own listings (section 11, item 6). Each moderator sets up two-factor on first visit.
+
+## 18. Phase 9: circle-trade detection, appeals, auction load test (built)
+
+Roadmap item 10 hardening (section 5.3) and the launch-readiness items that don't need counsel.
+
+**Circle-trade scan** (`src/domains/trust/circle-trade.ts`, nightly from the scheduled job; it skips itself if a scan ran in the last 20 hours)
+- A recursive query over released orders from the last 90 days finds directed cycles of 2 to 4 distinct accounts (A sells to B, B to C, C back to A). Each cycle is reported once.
+- **Item returns:** a released sale by X, then a later released order of a listing with an identical photo hash that X buys back or sells again.
+- Each finding raises one `CIRCLE_TRADE` signal (deduplicated across runs) that lists every order involved. Score: shorter cycles and cycles between accounts that are already linked score higher.
+- **Credit freeze:** unpaid referral earnings on those orders are frozen (shown under Frozen referral earnings for release or forfeit). The orders stop counting toward volume badges while the signal is open or confirmed, and the participants' badges are recounted right away.
+- **Dismissing** a signal recounts badges, so the orders count again. Frozen referral earnings stay frozen until staff release them.
+- Nothing is enforced automatically. Signals go to the trust and safety queue like every other detector.
+
+**Appeals**
+- **Account → Account standing** lists every action taken against the member, with one in-app appeal per action. Suspended and banned members can't sign in, so they still appeal by replying to the notice email.
+- Staff decide at **Trust and safety → Appeals**. Uphold keeps the action. Overturn lifts it in the same transaction and restores badges. Listing removals, voided bids, and forfeited fees can't be undone, so for those, overturn only records the outcome. The decision notes are emailed to the member.
+- Overturning a suspension or ban needs the owner's password and a current authenticator code. Nobody decides their own appeal. The database only lets the sanctioned member appeal, and a decided appeal can't be changed.
+- Open appeals are in the daily review counts and the digest.
+
+**Auction load test:** 90 concurrent proxy bids from 30 bidders on one auction must all settle cleanly (accepted or "bid too low"). The final standing replayed from every bid must match the stored leader, price, and bid count. The test is in the integration suite; auctions stay off.
+
+**Audit events:** `trust.circle_trade_scan`, `fraud.signal_created` (CIRCLE_TRADE), `referral.earning_frozen`, `appeal.submitted`, `appeal.upheld`, `appeal.overturned`.
+
+**Needs Andrew's decision or action**
+1. **Tuning:** the 90-day window and the 2 to 4 cycle length come from section 5.3. Review the first weeks of beta signals and say if the scan is too noisy.
+2. **Counsel sign-off on every legal template** (L1 to L11) is still required before the public launch. That can't be done in code.

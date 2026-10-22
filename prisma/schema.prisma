@@ -59,6 +59,8 @@ model User {
   linksA                AccountLink[]           @relation("AccountLinkA")
   linksB                AccountLink[]           @relation("AccountLinkB")
   enforcementActions    EnforcementAction[]     @relation("EnforcementSubject")
+  appeals               Appeal[]                @relation("AppealAuthor")
+  appealsDecided        Appeal[]                @relation("AppealDecider")
   enforcementsTaken     EnforcementAction[]     @relation("EnforcementActor")
   enforcementsLifted    EnforcementAction[]     @relation("EnforcementLifter")
   fraudSignalsReviewed  FraudSignal[]           @relation("FraudSignalReviewer")
@@ -662,6 +664,7 @@ model Order {
   disputes         Dispute[]
   ledgerEntries    LedgerEntry[]
   referralEarnings ReferralEarning[]
+  fraudSignalLinks FraudSignalOrder[]
   firstSaleOf      Referral?         @relation("ReferralFirstSale")
   auction          Auction?
 
@@ -890,10 +893,25 @@ model FraudSignal {
   reviewedById String?
   reviewedAt   DateTime?
   reviewNotes  String?
+  /// Detector-chosen key so a nightly job raises each finding once (e.g. a cycle's sorted order ids).
+  dedupeKey    String?             @unique
   reviewedBy   User?               @relation("FraudSignalReviewer", fields: [reviewedById], references: [id])
   actions      EnforcementAction[]
+  orders       FraudSignalOrder[]
 
   @@index([status, createdAt])
+}
+
+/// Every order a signal implicates (a circle trade spans several). Badge counts skip
+/// orders with an open or confirmed signal, whether it's the subject or listed here.
+model FraudSignalOrder {
+  signalId String
+  orderId  String
+  signal   FraudSignal @relation(fields: [signalId], references: [id])
+  order    Order       @relation(fields: [orderId], references: [id])
+
+  @@id([signalId, orderId])
+  @@index([orderId])
 }
 
 enum EnforcementType {
@@ -930,6 +948,7 @@ model EnforcementAction {
   fraudSignal   FraudSignal?    @relation(fields: [fraudSignalId], references: [id])
   listing       Listing?        @relation(fields: [listingId], references: [id])
   userBadge     UserBadge?      @relation(fields: [userBadgeId], references: [id])
+  appeal        Appeal?
 
   @@index([userId, createdAt])
   @@index([type, liftedAt, expiresAt])
@@ -1465,4 +1484,29 @@ model DailyDigest {
   day        DateTime @id @db.Date
   recipients Int
   sentAt     DateTime @default(now())
+}
+
+enum AppealStatus {
+  OPEN
+  UPHELD
+  OVERTURNED
+}
+
+/// A member's in-app appeal of one enforcement action (suspended and banned members can't
+/// sign in, so they appeal by replying to the notice email). One appeal per action.
+model Appeal {
+  id                  String            @id @default(cuid())
+  enforcementActionId String            @unique
+  userId              String
+  message             String
+  status              AppealStatus      @default(OPEN)
+  decidedById         String?
+  decidedAt           DateTime?
+  decisionNotes       String?
+  createdAt           DateTime          @default(now())
+  enforcementAction   EnforcementAction @relation(fields: [enforcementActionId], references: [id])
+  user                User              @relation("AppealAuthor", fields: [userId], references: [id])
+  decidedBy           User?             @relation("AppealDecider", fields: [decidedById], references: [id])
+
+  @@index([status, createdAt])
 }

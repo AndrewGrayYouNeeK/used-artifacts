@@ -11,10 +11,11 @@ import {
   takeEnforcementAction,
   type ManualEnforcementType,
 } from "@/domains/admin/enforcement";
+import { decideAppeal, submitAppeal } from "@/domains/admin/appeals";
 import { decideFrozenEarning } from "@/domains/growth/referrals";
 import { consumeSecondFactor, twoFactorStatus } from "@/domains/identity/two-factor";
 import { serverEnv } from "@/config/env";
-import { requireOwner, requireStaff } from "@/lib/auth/dal";
+import { requireOwner, requireStaff, requireUser } from "@/lib/auth/dal";
 import { verifyPassword } from "@/lib/auth/password";
 import { requestContext } from "@/lib/auth/session";
 import { db } from "@/lib/db";
@@ -210,4 +211,72 @@ export async function decideFrozenEarningAction(_prev: FormState, formData: Form
   }
   revalidatePath("/admin", "layout");
   return { status: "success", message: decision === "RELEASE" ? "Released to the normal payout schedule." : "Forfeited and recorded." };
+}
+
+export async function submitAppealAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const user = await requireUser();
+  const result = await submitAppeal(
+    { db },
+    { userId: user.id, enforcementActionId: str(formData, "enforcementActionId"), message: str(formData, "message") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "MESSAGE_LENGTH":
+        return { status: "error", message: "Explain what happened in 20 to 4,000 characters." };
+      case "ALREADY_APPEALED":
+        return { status: "error", message: "You've already appealed this action." };
+      case "ALREADY_LIFTED":
+        return { status: "error", message: "This action was already lifted." };
+      case "NOT_FOUND":
+        return { status: "error", message: "That action isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled appeal failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/account/standing");
+  return { status: "success", message: "Appeal sent. We'll email you when it's decided." };
+}
+
+export async function decideAppealAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const decision = str(formData, "decision");
+  if (decision !== "UPHOLD" && decision !== "OVERTURN") return { status: "error", message: "Choose uphold or overturn." };
+  if (decision === "OVERTURN") {
+    const appeal = await db.appeal.findUnique({
+      where: { id: str(formData, "appealId") },
+      select: { enforcementAction: { select: { type: true } } },
+    });
+    if (appeal && ACCOUNT_ACTIONS.has(appeal.enforcementAction.type) && !(await reauthenticated(staff.id, formData))) {
+      return { status: "error", message: "Enter your password and authenticator code to restore an account." };
+    }
+  }
+  const result = await decideAppeal(
+    identityDeps(),
+    { actorId: staff.id, appealId: str(formData, "appealId"), decision, notes: str(formData, "notes") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "NOTES_REQUIRED":
+        return { status: "error", message: "Write the decision (it's emailed to the member)." };
+      case "ALREADY_DECIDED":
+        return { status: "error", message: "Someone already decided this appeal." };
+      case "SELF_ACTION":
+        return { status: "error", message: "You can't decide your own appeal." };
+      case "OWNER_ONLY":
+        return { status: "error", message: "Only the owner can restore a suspended or banned account." };
+      case "NOT_STAFF":
+      case "NOT_FOUND":
+        return { status: "error", message: "That appeal isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled appeal decision failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: decision === "OVERTURN" ? "Overturned and emailed." : "Upheld and emailed." };
 }

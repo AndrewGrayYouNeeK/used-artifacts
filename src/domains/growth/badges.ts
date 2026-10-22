@@ -9,7 +9,7 @@ type Side = "SALES" | "PURCHASES";
 
 /**
  * Released orders that count toward volume badges: no chargeback, no open or
- * confirmed fraud signal on the order, the other party isn't a linked account,
+ * confirmed fraud signal on (or implicating) the order, the other party isn't a linked account,
  * and at most `perCounterparty` orders with the same person.
  */
 export async function qualifyingOrderCount(tx: Tx, userId: string, side: Side, perCounterparty: number): Promise<number> {
@@ -19,14 +19,17 @@ export async function qualifyingOrderCount(tx: Tx, userId: string, side: Side, p
     select: { id: true, buyerUserId: true, sellerUserId: true },
   });
   if (orders.length === 0) return 0;
-  const [flagged, linked] = await Promise.all([
-    tx.fraudSignal.findMany({
-      where: { subjectType: "Order", subjectId: { in: orders.map((o) => o.id) }, status: { in: ["OPEN", "CONFIRMED"] } },
-      select: { subjectId: true },
-    }),
-    stronglyLinkedUserIds(tx, userId),
-  ]);
-  const excluded = new Set(flagged.map((f) => f.subjectId));
+  const orderIds = orders.map((o) => o.id);
+  const flagged = await tx.fraudSignal.findMany({
+    where: { subjectType: "Order", subjectId: { in: orderIds }, status: { in: ["OPEN", "CONFIRMED"] } },
+    select: { subjectId: true },
+  });
+  const implicated = await tx.fraudSignalOrder.findMany({
+    where: { orderId: { in: orderIds }, signal: { status: { in: ["OPEN", "CONFIRMED"] } } },
+    select: { orderId: true },
+  });
+  const linked = await stronglyLinkedUserIds(tx, userId);
+  const excluded = new Set([...flagged.map((f) => f.subjectId), ...implicated.map((f) => f.orderId)]);
   const linkedIds = new Set(linked);
   const perPerson = new Map<string, number>();
   let count = 0;
@@ -121,10 +124,8 @@ export async function awardBetaFounder(
   const badge = await tx.badge.findUnique({ where: { code: BETA_FOUNDER_CODE } });
   if (!badge) return false;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('beta_founder_cap'))`;
-  const [existing, awardedCount] = await Promise.all([
-    tx.userBadge.findUnique({ where: { userId_badgeId: { userId, badgeId: badge.id } }, select: { id: true } }),
-    tx.userBadge.count({ where: { badgeId: badge.id } }),
-  ]);
+  const existing = await tx.userBadge.findUnique({ where: { userId_badgeId: { userId, badgeId: badge.id } }, select: { id: true } });
+  const awardedCount = await tx.userBadge.count({ where: { badgeId: badge.id } });
   const dbCap = (badge.criteria as { firstNSellers?: number } | null)?.firstNSellers ?? config.betaFounderLimit;
   if (existing || awardedCount >= Math.min(config.betaFounderLimit, dbCap)) return false;
   await tx.userBadge.create({

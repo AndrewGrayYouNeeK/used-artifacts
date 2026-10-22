@@ -56,6 +56,16 @@ async function AccountDetails() {
         <span className="text-sm font-medium">→</span>
       </Link>
       <Link
+        href="/account/standing"
+        className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white p-6 shadow-sm hover:border-stone-400"
+      >
+        <div>
+          <h2 className="font-serif text-lg font-semibold">Account standing</h2>
+          <p className="mt-1 text-sm text-stone-500">Warnings or other actions on your account, and appeals.</p>
+        </div>
+        <span className="text-sm font-medium">→</span>
+      </Link>
+      <Link
         href="/account/referrals"
         className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white p-6 shadow-sm hover:border-stone-400"
       >

@@ -64,10 +64,8 @@ export async function post(tx: Tx, postings: Posting[]) {
 export async function creditBalance(db: Db | Tx, code: string): Promise<number> {
   const account = await db.ledgerAccount.findUnique({ where: { code }, select: { id: true } });
   if (!account) return 0;
-  const [credits, debits] = await Promise.all([
-    db.ledgerEntry.aggregate({ where: { creditAccountId: account.id }, _sum: { amountCents: true } }),
-    db.ledgerEntry.aggregate({ where: { debitAccountId: account.id }, _sum: { amountCents: true } }),
-  ]);
+  const credits = await db.ledgerEntry.aggregate({ where: { creditAccountId: account.id }, _sum: { amountCents: true } });
+  const debits = await db.ledgerEntry.aggregate({ where: { debitAccountId: account.id }, _sum: { amountCents: true } });
   return (credits._sum.amountCents ?? 0) - (debits._sum.amountCents ?? 0);
 }
 
@@ -75,9 +73,7 @@ export async function creditBalance(db: Db | Tx, code: string): Promise<number> 
 export async function kindCreditBalance(db: Db | Tx, kind: LedgerAccountKind): Promise<number> {
   const ids = (await db.ledgerAccount.findMany({ where: { kind }, select: { id: true } })).map((a) => a.id);
   if (ids.length === 0) return 0;
-  const [credits, debits] = await Promise.all([
-    db.ledgerEntry.aggregate({ where: { creditAccountId: { in: ids } }, _sum: { amountCents: true } }),
-    db.ledgerEntry.aggregate({ where: { debitAccountId: { in: ids } }, _sum: { amountCents: true } }),
-  ]);
+  const credits = await db.ledgerEntry.aggregate({ where: { creditAccountId: { in: ids } }, _sum: { amountCents: true } });
+  const debits = await db.ledgerEntry.aggregate({ where: { debitAccountId: { in: ids } }, _sum: { amountCents: true } });
   return (credits._sum.amountCents ?? 0) - (debits._sum.amountCents ?? 0);
 }

@@ -222,6 +222,32 @@ export async function clawBackOrderEarnings(tx: Tx, orderId: string, reason: str
   return count;
 }
 
+/** Holds unpaid referral credit on an order for staff review (decided via decideFrozenEarning). */
+export async function freezeOrderEarnings(tx: Tx, orderId: string, reason: string): Promise<number> {
+  const earnings = await tx.referralEarning.findMany({
+    where: { orderId, status: { in: ["PENDING", "PAYABLE"] }, payoutId: null },
+    select: { id: true, status: true },
+  });
+  let count = 0;
+  for (const e of earnings) {
+    const updated = await tx.referralEarning.updateMany({
+      where: { id: e.id, status: e.status, payoutId: null },
+      data: { status: "FROZEN", frozenReason: reason },
+    });
+    if (updated.count !== 1) continue;
+    count++;
+    await writeAuditEvent(tx, {
+      actorType: "SYSTEM",
+      action: "referral.earning_frozen",
+      subjectType: "ReferralEarning",
+      subjectId: e.id,
+      before: { status: e.status },
+      after: { status: "FROZEN", reason },
+    });
+  }
+  return count;
+}
+
 /** Forfeits everything a referrer hasn't been paid yet (used when their account is banned). */
 export async function forfeitUnpaidEarnings(tx: Tx, referrerUserId: string, reason: string, actor: ClawbackActor): Promise<number> {
   const earnings = await tx.referralEarning.findMany({

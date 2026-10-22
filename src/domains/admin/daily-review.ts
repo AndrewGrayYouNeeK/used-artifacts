@@ -13,6 +13,7 @@ export interface StaffQueueCounts {
   fraudHolds: number;
   stuckTransfers: number;
   pendingRetractions: number;
+  openAppeals: number;
   pausedSwitches: string[];
 }
 
@@ -24,6 +25,7 @@ export async function staffQueueCounts(db: Db): Promise<StaffQueueCounts> {
   const fraudHolds = await db.order.count({ where: { releaseHold: true, status: { in: ["PAID_HELD", "SHIPPED", "DELIVERED"] } } });
   const stuckTransfers = await db.transfer.count({ where: { status: "PENDING", attempts: { gt: 0 } } });
   const pendingRetractions = await db.bidRetraction.count({ where: { status: "PENDING" } });
+  const openAppeals = await db.appeal.count({ where: { status: "OPEN" } });
   const paused = await db.killSwitch.findMany({ where: { paused: true }, select: { key: true } });
   const labels = new Map(KILL_SWITCHES.map((k) => [k.key, k.label]));
   return {
@@ -34,6 +36,7 @@ export async function staffQueueCounts(db: Db): Promise<StaffQueueCounts> {
     fraudHolds,
     stuckTransfers,
     pendingRetractions,
+    openAppeals,
     pausedSwitches: paused.map((p) => labels.get(p.key) ?? p.key),
   };
 }
@@ -132,6 +135,7 @@ export async function sendDailyDigest(deps: DigestDeps): Promise<DigestReport> {
     `Orders on fraud hold: ${counts.fraudHolds}`,
     `Seller transfers retrying: ${counts.stuckTransfers}`,
     `Bid retraction requests: ${counts.pendingRetractions}`,
+    `Open appeals: ${counts.openAppeals}`,
     `Open beta feedback: ${counts.openFeedback}`,
     `Paused kill switches: ${counts.pausedSwitches.length ? counts.pausedSwitches.join(", ") : "none"}`,
     "",

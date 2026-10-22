@@ -1,12 +1,13 @@
 import type { FraudSignal } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
 
-/** Signal subjects are a User, Listing or Order; evidence may name more accounts (`*UserId` keys). */
+/** Signal subjects are a User, Listing or Order; evidence may name more accounts (`*UserId` and `*UserIds` keys). */
 function evidenceUserIds(evidence: unknown): string[] {
   if (!evidence || typeof evidence !== "object") return [];
   const ids: string[] = [];
   for (const [key, value] of Object.entries(evidence)) {
     if (/userId$/i.test(key) && typeof value === "string") ids.push(value);
+    else if (/userIds$/i.test(key) && Array.isArray(value)) ids.push(...value.filter((v): v is string => typeof v === "string"));
     else if (value && typeof value === "object") ids.push(...evidenceUserIds(value));
   }
   return ids;

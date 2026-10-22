@@ -72,7 +72,7 @@ const NOTICE: Record<ManualEnforcementType, (reason: string, extra: string) => {
 
 const clock = (deps: { now?: () => Date }) => (deps.now ? deps.now() : new Date());
 
-async function staffRole(tx: Tx, userId: string): Promise<UserRole | null> {
+export async function staffRole(tx: Tx, userId: string): Promise<UserRole | null> {
   const user = await tx.user.findUnique({ where: { id: userId }, select: { role: true } });
   return user && (user.role === "OWNER" || user.role === "MODERATOR") ? user.role : null;
 }
@@ -237,6 +237,44 @@ async function restoreAccess(tx: Tx, userId: string) {
   await tx.storefront.updateMany({ where: { ownerUserId: userId, status: { in: ["SUSPENDED", "CLOSED"] } }, data: { status: "ACTIVE" } });
 }
 
+/** Actions that can't be undone by lifting: removed listings are resubmitted, voided bids and forfeited fees stay. */
+export const UNLIFTABLE_ACTIONS: ReadonlySet<EnforcementType> = new Set(["LISTING_REMOVED", "BID_VOID", "FEE_FORFEIT"]);
+
+type LiftTxResult = Exclude<LiftResult, { ok: true }> | { ok: true; email: string; type: EnforcementType };
+
+/** Lifts an action inside the caller's transaction (also used when an appeal is overturned). */
+export async function liftEnforcementActionTx(
+  tx: Tx,
+  input: { actorId: string; enforcementId: string; reason: string; now: Date },
+  ctx: RequestContext = {},
+): Promise<LiftTxResult> {
+  const role = await staffRole(tx, input.actorId);
+  if (!role) return { ok: false, reason: "NOT_STAFF" };
+  const action = await tx.enforcementAction.findUnique({ where: { id: input.enforcementId }, include: { user: { select: { email: true } } } });
+  if (!action) return { ok: false, reason: "NOT_FOUND" };
+  if (action.liftedAt) return { ok: false, reason: "ALREADY_LIFTED" };
+  if (ACCOUNT_ACTIONS.has(action.type) && role !== "OWNER") return { ok: false, reason: "OWNER_ONLY" };
+  if (UNLIFTABLE_ACTIONS.has(action.type)) return { ok: false, reason: "NOT_LIFTABLE" };
+  await tx.enforcementAction.update({
+    where: { id: action.id },
+    data: { liftedAt: input.now, liftedById: input.actorId, liftReason: input.reason },
+  });
+  if (action.type === "BADGE_REVOKED" && action.userBadgeId) {
+    await tx.userBadge.update({ where: { id: action.userBadgeId }, data: { revokedAt: null } });
+  }
+  if (action.type === "SUSPENSION" || action.type === "BAN") await restoreAccess(tx, action.userId);
+  await writeAuditEvent(tx, {
+    actorUserId: input.actorId,
+    actorType: "ADMIN",
+    action: "enforcement.lifted",
+    subjectType: "User",
+    subjectId: action.userId,
+    after: { enforcementId: action.id, type: action.type, reason: input.reason },
+    ipHash: ctx.ipHash,
+  });
+  return { ok: true, email: action.user.email, type: action.type };
+}
+
 /** Overturns an action on appeal. Removed listings stay removed (the seller resubmits); badges are restored. */
 export async function liftEnforcementAction(
   deps: IdentityDeps,
@@ -246,35 +284,7 @@ export async function liftEnforcementAction(
   const reason = input.reason.trim();
   if (reason.length < 5) return { ok: false, reason: "REASON_REQUIRED" };
   const now = clock(deps);
-  const result = await deps.db.$transaction(async (tx) => {
-    const role = await staffRole(tx, input.actorId);
-    if (!role) return { ok: false, reason: "NOT_STAFF" } as const;
-    const action = await tx.enforcementAction.findUnique({ where: { id: input.enforcementId }, include: { user: { select: { email: true } } } });
-    if (!action) return { ok: false, reason: "NOT_FOUND" } as const;
-    if (action.liftedAt) return { ok: false, reason: "ALREADY_LIFTED" } as const;
-    if (ACCOUNT_ACTIONS.has(action.type) && role !== "OWNER") return { ok: false, reason: "OWNER_ONLY" } as const;
-    if (action.type === "LISTING_REMOVED" || action.type === "BID_VOID" || action.type === "FEE_FORFEIT") {
-      return { ok: false, reason: "NOT_LIFTABLE" } as const;
-    }
-    await tx.enforcementAction.update({
-      where: { id: action.id },
-      data: { liftedAt: now, liftedById: input.actorId, liftReason: reason },
-    });
-    if (action.type === "BADGE_REVOKED" && action.userBadgeId) {
-      await tx.userBadge.update({ where: { id: action.userBadgeId }, data: { revokedAt: null } });
-    }
-    if (action.type === "SUSPENSION" || action.type === "BAN") await restoreAccess(tx, action.userId);
-    await writeAuditEvent(tx, {
-      actorUserId: input.actorId,
-      actorType: "ADMIN",
-      action: "enforcement.lifted",
-      subjectType: "User",
-      subjectId: action.userId,
-      after: { enforcementId: action.id, type: action.type, reason },
-      ipHash: ctx.ipHash,
-    });
-    return { ok: true, email: action.user.email, type: action.type } as const;
-  });
+  const result = await deps.db.$transaction((tx) => liftEnforcementActionTx(tx, { ...input, reason, now }, ctx));
   if (!result.ok) return result;
   if (result.type === "SUSPENSION" || result.type === "BAN") {
     await deps.mailer.send({
@@ -333,9 +343,11 @@ export async function reviewFraudSignal(
       data: { status: input.status, reviewedById: input.actorId, reviewedAt: clock(deps), reviewNotes: notes },
     });
     if (updated.count !== 1) return { ok: false, reason: "ALREADY_REVIEWED" } as const;
-    if (input.status === "CONFIRMED" && signal.subjectType === "Order") {
-      const order = await tx.order.findUnique({ where: { id: signal.subjectId }, select: { sellerUserId: true, buyerUserId: true } });
-      if (order) for (const userId of [order.sellerUserId, order.buyerUserId]) await recomputeVolumeBadges(tx, userId);
+    const linked = await tx.fraudSignalOrder.findMany({ where: { signalId: signal.id }, select: { orderId: true } });
+    const orderIds = [...(signal.subjectType === "Order" ? [signal.subjectId] : []), ...linked.map((l) => l.orderId)];
+    if (orderIds.length > 0) {
+      const orders = await tx.order.findMany({ where: { id: { in: orderIds } }, select: { sellerUserId: true, buyerUserId: true } });
+      for (const userId of new Set(orders.flatMap((o) => [o.sellerUserId, o.buyerUserId]))) await recomputeVolumeBadges(tx, userId);
     }
     await writeAuditEvent(tx, {
       actorUserId: input.actorId,

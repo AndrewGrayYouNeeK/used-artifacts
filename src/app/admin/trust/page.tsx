@@ -1,8 +1,10 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { decideFrozenEarningAction, reviewFraudSignalAction } from "@/app/actions/admin";
+import { decideAppealAction, decideFrozenEarningAction, reviewFraudSignalAction } from "@/app/actions/admin";
 import { decideRetractionAction, voidBidsAction } from "@/app/actions/auctions";
 import { recordDailyReviewAction } from "@/app/actions/beta";
+import { openAppeals } from "@/domains/admin/appeals";
+import { ACCOUNT_ACTIONS } from "@/domains/admin/enforcement";
 import { recentDailyReviews, staffQueueCounts, utcDay } from "@/domains/admin/daily-review";
 import { platform } from "@/config/platform";
 import { ActionForm, inputClass } from "@/components/action-form";
@@ -32,8 +34,8 @@ const auctionIdOf = (evidence: unknown) =>
     : null;
 
 async function Trust() {
-  await requireStaff();
-  const [signals, active, reviewed, frozen, retractions] = await Promise.all([
+  const staff = await requireStaff();
+  const [signals, active, reviewed, frozen, retractions, appeals] = await Promise.all([
     db.fraudSignal.findMany({ where: { status: "OPEN" }, orderBy: [{ score: "desc" }, { createdAt: "asc" }], take: 100 }),
     db.enforcementAction.findMany({
       where: { liftedAt: null, type: { in: ["SUSPENSION", "BAN"] } },
@@ -69,6 +71,7 @@ async function Trust() {
         },
       },
     }),
+    openAppeals(db),
   ]);
   const accounts = await signalAccounts(db, signals);
   const reviews = await recentDailyReviews(db);
@@ -92,6 +95,7 @@ async function Trust() {
             ["Fraud holds", counts.fraudHolds, "/admin/orders"],
             ["Transfers retrying", counts.stuckTransfers, "/admin/orders"],
             ["Retraction requests", counts.pendingRetractions, "/admin/trust"],
+            ["Open appeals", counts.openAppeals, "/admin/trust"],
             ["Open feedback", counts.openFeedback, "/admin/feedback"],
             ["Paused switches", counts.pausedSwitches.length, "/admin/beta"],
           ].map(([name, value, href]) => (
@@ -167,6 +171,50 @@ async function Trust() {
                   <input type="hidden" name="bidderUserId" value={s.subjectId} />
                   <input type="hidden" name="fraudSignalId" value={s.id} />
                   <input name="reason" required minLength={5} placeholder="Reason (emailed to the bidder)" className={inputClass} />
+                </ActionForm>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <h2 className="font-serif text-lg font-semibold">Appeals</h2>
+        <p className="mt-1 text-sm text-stone-500">
+          Members appeal from their account standing page (suspended and banned members reply to the notice email instead;
+          lift those from their account). Overturning lifts the action; your notes are emailed to the member.
+        </p>
+        {appeals.length === 0 && <p className="mt-4 text-sm text-stone-500">Nothing open.</p>}
+        <ul className="mt-4 space-y-4">
+          {appeals.map((a) => (
+            <li key={a.id} className="rounded-xl border border-stone-100 p-4 text-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="font-medium">
+                  <Link href={`/admin/users/${a.user.id}`} className="underline">
+                    {a.user.displayName}
+                  </Link>{" "}
+                  · {label(a.enforcementAction.type)} on {time(a.enforcementAction.createdAt)}
+                </span>
+                <span className="text-xs text-stone-500">appealed {time(a.createdAt)}</span>
+              </div>
+              <p className="mt-1 text-stone-500">Action reason: {a.enforcementAction.reason}</p>
+              <p className="mt-2 whitespace-pre-wrap text-stone-800">{a.message}</p>
+              {a.user.id === staff.id ? (
+                <p className="mt-3 text-xs text-stone-500">Your own appeal; another staff member decides it.</p>
+              ) : (
+                <ActionForm action={decideAppealAction} submitLabel="Record decision" variant="secondary" className="mt-3 grid gap-2 sm:grid-cols-[auto_1fr_auto]">
+                  <input type="hidden" name="appealId" value={a.id} />
+                  <select name="decision" className={inputClass} defaultValue="UPHOLD">
+                    <option value="UPHOLD">Uphold</option>
+                    <option value="OVERTURN">Overturn</option>
+                  </select>
+                  <input name="notes" required minLength={5} placeholder="Decision (emailed to the member)" className={inputClass} />
+                  {ACCOUNT_ACTIONS.has(a.enforcementAction.type) && (
+                    <>
+                      <input name="password" type="password" placeholder="Your password (to overturn)" className={inputClass} />
+                      <input name="code" inputMode="numeric" placeholder="Authenticator code" className={inputClass} />
+                    </>
+                  )}
                 </ActionForm>
               )}
             </li>
