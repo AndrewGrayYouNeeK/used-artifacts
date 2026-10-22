@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { createDb } from "@/lib/db";
 import type { Vertical } from "@/generated/prisma/enums";
+import { BASELINE_PROHIBITED_TERMS } from "@/domains/compliance/prohibited-terms";
+import { PROVENANCE_TEMPLATE_V2 } from "@/domains/compliance/provenance-template";
 
 const db = createDb(process.env.DATABASE_URL!);
 
@@ -111,21 +113,6 @@ const BADGES = [
   },
 ];
 
-const PROHIBITED_TERMS = [
-  { pattern: "human remains", reason: "NAGPRA: human remains are banned" },
-  { pattern: "skull", reason: "Possible human remains" },
-  { pattern: "burial", reason: "Possible funerary object" },
-  { pattern: "grave goods", reason: "NAGPRA: funerary objects are banned" },
-  { pattern: "funerary", reason: "NAGPRA: funerary objects are banned" },
-  { pattern: "sacred", reason: "NAGPRA: sacred objects are banned" },
-  { pattern: "ceremonial", reason: "Possible sacred object; needs review" },
-  { pattern: "cultural patrimony", reason: "NAGPRA: cultural patrimony is banned" },
-  { pattern: "national forest", reason: "ARPA: federal land" },
-  { pattern: "blm land", reason: "ARPA: federal land" },
-  { pattern: "indian[- ]made", reason: "IACA: unverified Indian-made claim", isRegex: true },
-  { pattern: "native american made", reason: "IACA: unverified Native American-made claim" },
-];
-
 async function seedCategories() {
   let order = 0;
   for (const top of CATEGORIES) {
@@ -167,27 +154,30 @@ async function main() {
     await db.badge.upsert({ where: { code: badge.code }, update: {}, create: badge });
   }
 
-  for (const term of PROHIBITED_TERMS) {
+  for (const term of BASELINE_PROHIBITED_TERMS) {
+    const data = {
+      reason: `${term.law}: ${term.reason}`,
+      isRegex: term.isRegex ?? false,
+      severity: term.severity,
+    };
     await db.prohibitedTerm.upsert({
       where: { pattern: term.pattern },
-      update: {},
-      create: { pattern: term.pattern, reason: term.reason, isRegex: term.isRegex ?? false },
+      update: data,
+      create: { pattern: term.pattern, ...data },
     });
   }
 
+  const template = PROVENANCE_TEMPLATE_V2;
   await db.provenanceStatementTemplate.upsert({
-    where: { version: 1 },
+    where: { version: template.version },
     update: {},
     create: {
-      version: 1,
-      effectiveAt: new Date(),
+      version: template.version,
+      body: template.body,
+      attestations: template.attestations.map((a) => ({ key: a.key, text: a.text })),
+      isDraft: true,
       approvedBy: null,
-      body: [
-        "DRAFT: PENDING COUNSEL REVIEW (see BUILD_PLAN.md L2, L3, L5, L6). Not for production use.",
-        "I declare that this item was not removed from any national forest, other federal land, state land, or tribal land;",
-        "that it is not human remains, a funerary object, a sacred object, or an object of cultural patrimony;",
-        "and that I have not represented it as Indian-made or Native American-made without verification.",
-      ].join("\n"),
+      effectiveAt: new Date(),
     },
   });
 

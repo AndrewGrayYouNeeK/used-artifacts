@@ -110,9 +110,16 @@ model EmailVerificationToken {
 
 enum IdentityVerificationStatus {
   PENDING
+  PROCESSING
   REQUIRES_INPUT
   VERIFIED
-  FAILED
+  CANCELED
+  /// Same name + date of birth as another account with a different document; staff decide.
+  NEEDS_REVIEW
+  /// The document is already bound to another account (one identity per account).
+  DUPLICATE_REJECTED
+  /// Staff rejected a NEEDS_REVIEW verification.
+  REJECTED
 }
 
 model IdentityVerification {
@@ -124,11 +131,39 @@ model IdentityVerification {
   verifiedAt              DateTime?
   legalName               String?
   dobYear                 Int?
+  documentType            String?
+  issuingCountry          String?
+  /// Provider sessions started; capped because each check is billed.
+  attemptCount            Int                        @default(0)
+  /// Provider error code when the user must retry (e.g. selfie_face_mismatch).
+  lastErrorCode           String?
   /// Keyed HMAC of document number + country + DOB. Unique => one identity per account.
+  /// Kept after staff rejection so the same document can't be reused on another account.
   documentFingerprintHash String?                    @unique
+  /// Keyed HMAC of normalized legal name + full DOB. Not unique: a collision is a review signal.
+  personFingerprintHash   String?
+  /// The other account involved when status is NEEDS_REVIEW or DUPLICATE_REJECTED.
+  conflictingUserId       String?
+  reviewedById            String?
+  reviewedAt              DateTime?
+  reviewNotes             String?
+  consentedAt             DateTime?
+  consentNoticeVersion    Int?
   createdAt               DateTime                   @default(now())
   updatedAt               DateTime                   @updatedAt
   user                    User                       @relation(fields: [userId], references: [id])
+
+  @@index([personFingerprintHash])
+  @@index([status])
+}
+
+/// Inbound webhook deliveries, keyed by the provider's event id, so retries are processed once.
+model WebhookEvent {
+  id          String    @id
+  provider    String
+  type        String
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
 }
 
 model LoginEvent {
@@ -231,6 +266,7 @@ enum ListingFormat {
 enum ListingStatus {
   DRAFT
   PENDING_REVIEW
+  REJECTED
   LIVE
   SOLD
   ENDED
@@ -246,6 +282,10 @@ model Listing {
   description          String
   /// Seller's self-reported condition; compared later against partner grades.
   sellerConditionGrade String?
+  /// Required for Native American categories (see listing rules).
+  regionOfOrigin       String?
+  estimatedAge         String?
+  materials            String?
   format               ListingFormat
   /// What the seller asks. Buyers see askingPriceCents + buyer fee (owner decision B3).
   askingPriceCents     Int?
@@ -295,13 +335,18 @@ enum AcquisitionSource {
 }
 
 model ProvenanceStatementTemplate {
-  id          String                @id @default(cuid())
-  version     Int                   @unique
-  body        String
-  approvedBy  String?
-  effectiveAt DateTime
-  createdAt   DateTime              @default(now())
-  statements  ProvenanceStatement[]
+  id           String                @id @default(cuid())
+  version      Int                   @unique
+  /// Shown verbatim above the attestations. Must stay marked as a draft until counsel approves.
+  body         String
+  /// [{ key, text }]: every one must be accepted to sign.
+  attestations Json
+  /// True until counsel signs off (BUILD_PLAN L2, L3, L5, L6).
+  isDraft      Boolean               @default(true)
+  approvedBy   String?
+  effectiveAt  DateTime
+  createdAt    DateTime              @default(now())
+  statements   ProvenanceStatement[]
 }
 
 /// Immutable once signed; edits create a new row.
@@ -313,11 +358,21 @@ model ProvenanceStatement {
   acquisitionSource                            AcquisitionSource
   acquisitionState                             String?
   acquisitionYearApprox                        Int?
+  /// Free-text account of how and where the seller got the item.
+  acquisitionDetails                           String
+  /// Required when acquisitionSource is PRIVATE_LAND_WITH_PERMISSION.
+  landownerName                                String?
   landownerPermissionDocKey                    String?
   priorOwnerChain                              Json?
   attestsNotFederalStateOrTribalLand           Boolean
   attestsNotHumanRemainsFuneralSacredPatrimony Boolean
   attestsNotIndianMadeMisrepresented           Boolean
+  /// Every attestation key from the template that the seller accepted.
+  attestationKeys                              String[]
+  /// Native American categories: seller acknowledged the Indian Arts and Crafts Act disclosure.
+  iacaDisclosureAcknowledged                   Boolean                     @default(false)
+  /// The listing content the statement covers, frozen at signing.
+  listingSnapshot                              Json
   signedName                                   String
   signedAt                                     DateTime                    @default(now())
   ip                                           String?
@@ -331,6 +386,8 @@ model ProvenanceStatement {
 }
 
 enum ComplianceReviewReason {
+  /// Beta policy: every listing is reviewed before it goes live.
+  BETA_FULL_REVIEW
   AI_FLAG
   CATEGORY
   KEYWORD
@@ -349,6 +406,8 @@ model ComplianceReview {
   id         String                 @id @default(cuid())
   listingId  String
   reason     ComplianceReviewReason
+  /// Screening matches and rule flags captured at submission.
+  flags      Json?
   status     ComplianceReviewStatus @default(OPEN)
   reviewerId String?
   decision   String?
@@ -361,12 +420,20 @@ model ComplianceReview {
   @@index([status, createdAt])
 }
 
+enum ProhibitedTermSeverity {
+  /// Submission is refused outright (e.g. NAGPRA-banned objects).
+  BLOCK
+  /// Submission is allowed but flagged for the compliance reviewer.
+  REVIEW
+}
+
 model ProhibitedTerm {
-  id        String   @id @default(cuid())
-  pattern   String   @unique
-  isRegex   Boolean  @default(false)
+  id        String                 @id @default(cuid())
+  pattern   String                 @unique
+  isRegex   Boolean                @default(false)
+  severity  ProhibitedTermSeverity @default(BLOCK)
   reason    String
-  createdAt DateTime @default(now())
+  createdAt DateTime               @default(now())
 }
 
 // ───────────────────────────── Auctions ─────────────────────────────
@@ -646,6 +713,7 @@ enum AccountLinkSignal {
   SAME_SHIPPING_ADDRESS
   SAME_BANK
   SAME_ID_HASH_ATTEMPT
+  SAME_PERSON_DETAILS
 }
 
 model AccountLink {
@@ -662,6 +730,7 @@ model AccountLink {
 }
 
 enum FraudDetector {
+  DUPLICATE_IDENTITY
   SELF_BUY
   SHILL
   CIRCLE_TRADE

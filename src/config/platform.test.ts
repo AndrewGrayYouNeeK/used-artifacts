@@ -10,6 +10,12 @@ describe("platform config", () => {
     expect(cfg.betaFounderLimit).toBe(100);
   });
 
+  it("keeps auctions off unless explicitly enabled", () => {
+    expect(loadPlatformConfig({}).auctionsEnabled).toBe(false);
+    expect(loadPlatformConfig({ AUCTIONS_ENABLED: "true" }).auctionsEnabled).toBe(true);
+    expect(() => loadPlatformConfig({ AUCTIONS_ENABLED: "yes" })).toThrow();
+  });
+
   it("enables antiques via config", () => {
     const cfg = loadPlatformConfig({ ENABLED_VERTICALS: "artifact, antique" });
     expect(isVerticalEnabled("ANTIQUE", cfg)).toBe(true);
