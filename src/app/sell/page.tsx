@@ -13,6 +13,7 @@ import {
 } from "@/app/actions/orders";
 import { changePriceAction, withdrawListingAction } from "@/app/actions/listings";
 import { ActionForm, inputClass } from "@/components/action-form";
+import { UncertaintyBadge } from "@/components/uncertainty-badge";
 import { OrderStatusBadge } from "@/components/order-status";
 import { CARRIERS } from "@/domains/orders/fulfillment";
 import { StorefrontForm } from "./storefront-form";
@@ -74,7 +75,10 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
   const listings = await db.listing.findMany({
     where: { sellerUserId: user.id },
     orderBy: { createdAt: "desc" },
-    include: { complianceReviews: { orderBy: { createdAt: "desc" }, take: 1 } },
+    include: {
+      complianceReviews: { orderBy: { createdAt: "desc" }, take: 1 },
+      aiAnalyses: { orderBy: { createdAt: "desc" }, take: 1, select: { uncertainty: true, blocksPublishing: true } },
+    },
   });
   const rates = feeRates();
   const sales = await db.order.findMany({
@@ -220,6 +224,12 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
                       {statusLabel[l.status]}
                       {l.status === "REJECTED" && review?.notes && (
                         <span className="mt-1 block text-xs text-red-700">{review.notes}</span>
+                      )}
+                      {l.status === "PENDING_REVIEW" && l.aiAnalyses[0] && (
+                        <span className="mt-1 flex items-center gap-1 text-xs text-stone-600">
+                          AI check: <UncertaintyBadge uncertainty={l.aiAnalyses[0].uncertainty} />
+                          {l.aiAnalyses[0].blocksPublishing && <span className="text-red-700">extra compliance review</span>}
+                        </span>
                       )}
                     </td>
                     <td className="py-2">

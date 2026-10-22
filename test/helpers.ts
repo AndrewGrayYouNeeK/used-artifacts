@@ -7,6 +7,7 @@ import type { UserRole, Vertical } from "@/generated/prisma/enums";
 import { PROVENANCE_TEMPLATE_V2 } from "@/domains/compliance/provenance-template";
 import { decideListingReview } from "@/domains/compliance/review";
 import { submitListing } from "@/domains/listings/listings";
+import { FakeVisionProvider } from "@/domains/ai/fake-vision";
 
 export function testDb(): Db {
   return createDb(process.env.TEST_DATABASE_URL!);
@@ -102,6 +103,7 @@ export async function markIdentityVerified(db: Db, userId: string, legalName = "
 export function testPhotos(count = 1) {
   return Array.from({ length: count }, () => ({
     storageKey: `listings/test-${randomUUID()}.webp`,
+    bytes: new Uint8Array(0),
     pHash: randomBytes(8).toString("hex"),
     width: 1200,
     height: 900,
@@ -137,7 +139,7 @@ export async function createLiveListing(
   }
   const category = await createCategory(db);
   const result = await submitListing(
-    { db },
+    { db, vision: new FakeVisionProvider() },
     {
       userId: seller.id,
       photos: opts.photos ?? testPhotos(),

@@ -16,6 +16,8 @@ const ACCEPTED_FORMATS = new Set(["jpeg", "png", "webp", "heif", "avif"]);
 
 export interface PreparedPhoto {
   storageKey: string;
+  /** The stored WebP, kept in memory for the photo analyzer. */
+  bytes: Uint8Array;
   pHash: string;
   width: number;
   height: number;
@@ -86,7 +88,7 @@ export async function storePhotos(
   for (const p of processed) {
     const storageKey = `listings/${randomUUID()}.webp`;
     await storage.put(storageKey, p.webp);
-    photos.push({ storageKey, pHash: p.pHash, width: p.width, height: p.height });
+    photos.push({ storageKey, bytes: p.webp, pHash: p.pHash, width: p.width, height: p.height });
   }
   return { ok: true, photos };
 }

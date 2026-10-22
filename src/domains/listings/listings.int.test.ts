@@ -9,11 +9,13 @@ import {
 } from "../../../test/helpers";
 import { PROVENANCE_TEMPLATE_V2 } from "@/domains/compliance/provenance-template";
 import { decideListingReview } from "@/domains/compliance/review";
+import { FakeVisionProvider } from "@/domains/ai/fake-vision";
 import { createStorefront, submitListing } from "./listings";
 import type { ListingSubmission } from "./rules";
 
 const db = testDb();
-const deps = { db };
+const vision = new FakeVisionProvider();
+const deps = { db, vision };
 beforeAll(() => ensureProvenanceTemplate(db));
 afterAll(() => db.$disconnect());
 

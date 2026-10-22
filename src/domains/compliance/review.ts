@@ -8,8 +8,11 @@ export type DecideListingResult =
   | { ok: true; listingStatus: "LIVE" | "REJECTED" }
   | {
       ok: false;
-      reason: "NOT_STAFF" | "NOT_FOUND" | "ALREADY_DECIDED" | "SELF_REVIEW" | "NOTES_REQUIRED" | "SELLER_NOT_VERIFIED";
+      reason: "NOT_STAFF" | "NOT_FOUND" | "ALREADY_DECIDED" | "SELF_REVIEW" | "NOTES_REQUIRED" | "SELLER_NOT_VERIFIED" | "AI_FLAG_NOTES_REQUIRED";
     };
+
+/** Approving over an AI red flag (possible remains, funerary, sacred, patrimony) needs a written reason. */
+export const AI_FLAG_APPROVAL_NOTES_MIN = 20;
 
 /**
  * Staff decision on a queued listing. A seller can never approve their own
@@ -47,6 +50,13 @@ export async function decideListingReview(
         select: { id: true },
       });
       if (!verified) return { ok: false, reason: "SELLER_NOT_VERIFIED" } as const;
+      const redFlagged = await tx.aiAnalysis.findFirst({
+        where: { listingId: review.listing.id, blocksPublishing: true },
+        select: { id: true },
+      });
+      if (redFlagged && notes.length < AI_FLAG_APPROVAL_NOTES_MIN) {
+        return { ok: false, reason: "AI_FLAG_NOTES_REQUIRED" } as const;
+      }
     }
 
     const claimed = await tx.complianceReview.updateMany({

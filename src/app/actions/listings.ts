@@ -7,7 +7,12 @@ import type { FormState } from "@/app/actions/auth";
 import { decideListingReview } from "@/domains/compliance/review";
 import { StorefrontSchema, createStorefront, submitListing } from "@/domains/listings/listings";
 import { changeAskingPrice, withdrawListing } from "@/domains/listings/manage";
-import { MAX_PHOTOS, storePhotos } from "@/domains/listings/photos";
+import { MAX_PHOTOS, processPhoto, storePhotos } from "@/domains/listings/photos";
+import { parseAcceptedSuggestions, suggestFromPhotos } from "@/domains/ai/analyzer";
+import type { NormalizedAnalysis } from "@/domains/ai/output";
+import type { AiUncertainty } from "@/generated/prisma/enums";
+import { checkIdentityGate } from "@/domains/identity/verification/verification";
+import { visionProvider } from "@/lib/ai/vision-provider";
 import { AskingPriceSchema, ListingSubmissionSchema } from "@/domains/listings/rules";
 import { requireStaff, requireUser } from "@/lib/auth/dal";
 import { requestContext } from "@/lib/auth/session";
@@ -102,8 +107,14 @@ export async function submitListingAction(_prev: FormState, formData: FormData):
   }
 
   const result = await submitListing(
-    { db },
-    { userId: user.id, submission: parsed.data, photos: stored.photos },
+    { db, vision: visionProvider() },
+    {
+      userId: user.id,
+      submission: parsed.data,
+      photos: stored.photos,
+      aiSuggestionId: str(formData, "aiAnalysisId") || null,
+      aiAccepted: parseAcceptedSuggestions(formData.getAll("aiAccepted").map(String)),
+    },
     await requestContext(),
   );
   if (result.ok) redirect(`/sell?submitted=${encodeURIComponent(result.listingId)}`);
@@ -156,6 +167,11 @@ export async function decideListingReviewAction(_prev: FormState, formData: Form
         return { status: "error", message: "You can't review your own listing. Another staff member must." };
       case "SELLER_NOT_VERIFIED":
         return { status: "error", message: "The seller's identity is no longer verified." };
+      case "AI_FLAG_NOTES_REQUIRED":
+        return {
+          status: "error",
+          message: "The photo analyzer raised a red flag. Explain in the notes (20+ characters) why this item is allowed.",
+        };
       case "NOT_STAFF":
       case "NOT_FOUND":
       case "ALREADY_DECIDED":
@@ -214,4 +230,63 @@ export async function withdrawListingAction(_prev: FormState, formData: FormData
   }
   revalidatePath("/sell");
   return { status: "success", message: "Listing withdrawn." };
+}
+
+export type SuggestState =
+  | { status: "idle" }
+  | { status: "error"; message: string }
+  | {
+      status: "ready";
+      analysisId: string;
+      uncertainty: AiUncertainty;
+      flags: string[];
+      normalized: NormalizedAnalysis;
+      unavailable: boolean;
+    };
+
+/** Pre-submission photo analysis; the seller chooses which suggestions to copy into the form. */
+export async function suggestFromPhotosAction(_prev: SuggestState, formData: FormData): Promise<SuggestState> {
+  const user = await requireUser();
+  const gate = await checkIdentityGate(db, user.id, "SELL");
+  if (!gate.ok) return { status: "error", message: gateMessage[gate.reason] };
+  const files = formData.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+  if (files.length === 0) return { status: "error", message: "Add photos first." };
+  if (files.length > MAX_PHOTOS) return { status: "error", message: `Up to ${MAX_PHOTOS} photos.` };
+  const photos = [];
+  for (const [index, file] of files.entries()) {
+    const processed = await processPhoto(new Uint8Array(await file.arrayBuffer()));
+    if (!processed.ok) {
+      return {
+        status: "error",
+        message: processed.reason === "TOO_LARGE" ? `Photo ${index + 1} is larger than 5 MB.` : `Photo ${index + 1} isn't a supported image.`,
+      };
+    }
+    photos.push({ bytes: processed.webp, pHash: processed.pHash });
+  }
+  const result = await suggestFromPhotos(
+    { db, vision: visionProvider() },
+    { userId: user.id, photos, categoryId: str(formData, "categoryId") || null },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "RATE_LIMITED":
+        return { status: "error", message: "You've used today's photo analyses. Try again tomorrow, or submit without suggestions." };
+      case "NO_PHOTOS":
+        return { status: "error", message: "Add photos first." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled suggestion failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  const a = result.analysis;
+  return {
+    status: "ready",
+    analysisId: a.id,
+    uncertainty: a.uncertainty,
+    flags: a.flags,
+    normalized: a.normalized,
+    unavailable: a.error !== null,
+  };
 }

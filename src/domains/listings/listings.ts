@@ -15,11 +15,18 @@ import { screenFields, screeningTerms, type ScreeningMatch } from "@/domains/com
 import { raiseFraudSignal, stronglyLinkedUserIds } from "@/domains/trust/linkage";
 import { checkListingRules, type ListingSubmission, type RuleIssue } from "./rules";
 import { hammingDistance, MAX_PHOTOS, type PreparedPhoto } from "./photos";
+import { analysisForSubmission, attachAnalysis } from "@/domains/ai/analyzer";
+import type { SuggestionField } from "@/domains/ai/output";
+import type { VisionProvider } from "@/domains/ai/vision";
 
 export interface ListingDeps {
   db: Db;
   now?: () => Date;
   platform?: PlatformConfig;
+}
+
+export interface SubmitListingDeps extends ListingDeps {
+  vision: VisionProvider;
 }
 
 const clock = (deps: ListingDeps) => (deps.now ? deps.now() : new Date());
@@ -110,8 +117,15 @@ export type SubmitListingResult =
  * it can go live; nothing here publishes.
  */
 export async function submitListing(
-  deps: ListingDeps,
-  input: { userId: string; submission: ListingSubmission; photos: PreparedPhoto[] },
+  deps: SubmitListingDeps,
+  input: {
+    userId: string;
+    submission: ListingSubmission;
+    photos: PreparedPhoto[];
+    /** The seller's pre-submission suggestion run, reused when it covered the same photos and category. */
+    aiSuggestionId?: string | null;
+    aiAccepted?: SuggestionField[];
+  },
   ctx: RequestContext = {},
 ): Promise<SubmitListingResult> {
   const config = deps.platform ?? platform;
@@ -172,9 +186,32 @@ export async function submitListing(
   }
 
   const reusedPhotos = await findReusedPhotos(deps.db, input.userId, input.photos);
-  const reason: ComplianceReviewReason =
-    screening.review.length > 0 ? "KEYWORD" : category.requiresEnhancedReview ? "CATEGORY" : "BETA_FULL_REVIEW";
+  const ai = await analysisForSubmission(
+    { db: deps.db, vision: deps.vision, now: deps.now, platform: config },
+    {
+      userId: input.userId,
+      photos: input.photos.map((p) => ({ bytes: p.bytes, pHash: p.pHash })),
+      categoryId: category.id,
+      suggestionId: input.aiSuggestionId,
+    },
+    ctx,
+  );
+  const reason: ComplianceReviewReason = ai.blocksPublishing
+    ? "AI_FLAG"
+    : screening.review.length > 0
+      ? "KEYWORD"
+      : category.requiresEnhancedReview
+        ? "CATEGORY"
+        : "BETA_FULL_REVIEW";
   const flags = {
+    ai: {
+      analysisId: ai.id,
+      uncertainty: ai.uncertainty,
+      flags: ai.flags,
+      redFlags: ai.normalized.redFlags.map((r) => r.flag),
+      blocksPublishing: ai.blocksPublishing,
+      error: ai.error,
+    },
     reusedPhotos,
     screening: screening.review.map((m) => ({ field: m.field, pattern: m.pattern, matchedText: m.matchedText, reason: m.reason })),
     enhancedReviewCategory: category.requiresEnhancedReview,
@@ -209,6 +246,13 @@ export async function submitListing(
           })),
         },
       },
+      include: { photos: { select: { id: true }, orderBy: { sortOrder: "asc" } } },
+    });
+    await attachAnalysis(tx, {
+      analysis: ai,
+      listingId: listing.id,
+      photoIds: listing.photos.map((p) => p.id),
+      accepted: input.aiAccepted ?? [],
     });
     await tx.itemFingerprint.create({
       data: {

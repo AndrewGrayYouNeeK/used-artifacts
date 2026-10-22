@@ -170,6 +170,36 @@ export function shippingEnv(): ShippingEnv {
   return cachedShipping;
 }
 
+/** Vision model for the photo analyzer (BUILD_PLAN 3.5). */
+const AiEnvSchema = z
+  .object({
+    /** `fake` returns canned suggestions locally and is refused in production. */
+    AI_VISION_PROVIDER: z.enum(["anthropic", "fake"]).optional(),
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    AI_VISION_MODEL: z.string().min(1).default("claude-sonnet-4-5"),
+  })
+  .transform((env) => ({
+    ...env,
+    AI_VISION_PROVIDER: env.AI_VISION_PROVIDER ?? (env.ANTHROPIC_API_KEY || isProduction ? "anthropic" : "fake"),
+  }))
+  .superRefine((env, ctx) => {
+    if (env.AI_VISION_PROVIDER === "fake" && isProduction) {
+      ctx.addIssue({ code: "custom", message: "AI_VISION_PROVIDER=fake is not allowed in production." });
+    }
+    if (env.AI_VISION_PROVIDER === "anthropic" && !env.ANTHROPIC_API_KEY) {
+      ctx.addIssue({ code: "custom", message: "The photo analyzer needs ANTHROPIC_API_KEY." });
+    }
+  });
+
+export type AiEnv = z.infer<typeof AiEnvSchema>;
+
+let cachedAi: AiEnv | undefined;
+
+export function aiEnv(): AiEnv {
+  cachedAi ??= AiEnvSchema.parse(envSource());
+  return cachedAi;
+}
+
 /** Bearer token the scheduler sends to /api/cron/* (Vercel Cron sends CRON_SECRET automatically). */
 export function cronSecret(): string {
   return devDefault("dev-only-cron-secret-change-me-0000000000000").parse(envSource().CRON_SECRET);

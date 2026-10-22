@@ -6,7 +6,7 @@ The full plan, owner decisions, and roadmap are in [`docs/BUILD_PLAN.md`](docs/B
 
 ## Stack
 
-Next.js 16 (App Router, Cache Components) · TypeScript · Postgres 16 + Prisma 7 · Zod · argon2id · Vitest · Stripe Identity · Stripe Connect (Express) · S3/R2 photo storage (sharp) · EasyPost tracking · Postmark.
+Next.js 16 (App Router, Cache Components) · TypeScript · Postgres 16 + Prisma 7 · Zod · argon2id · Vitest · Stripe Identity · Stripe Connect (Express) · S3/R2 photo storage (sharp) · Claude vision (photo analyzer) · EasyPost tracking · Postmark.
 
 ## Local setup
 
@@ -33,6 +33,10 @@ With no `STRIPE_SECRET_KEY` (or `PAYMENTS_PROVIDER=fake`), payouts and checkout 
 Photos are stored in `.data/uploads` (re-encoded to WebP, metadata stripped). Production uses S3 or Cloudflare R2 (`STORAGE_DRIVER=s3`).
 
 For real Stripe Connect, point a webhook (with "Listen to events on Connected accounts" enabled) at `/api/webhooks/stripe` for `checkout.session.completed`, `checkout.session.expired`, `account.updated`, and `charge.dispute.created`, and set `STRIPE_WEBHOOK_SECRET`. Locally: `stripe listen --forward-connect-to localhost:3000/api/webhooks/stripe --forward-to localhost:3000/api/webhooks/stripe`.
+
+### Photo analyzer in dev
+
+With no `ANTHROPIC_API_KEY`, "Get suggestions" on `/sell/new` and the analysis that runs on every submission use canned output (`src/domains/ai/fake-vision.ts`). Set `ANTHROPIC_API_KEY` (and optionally `AI_VISION_MODEL`) to call Claude. The guardrails in `src/domains/ai/guardrails.ts` run on every result either way.
 
 ### Assign the Proprietor badge (one time, ever)
 

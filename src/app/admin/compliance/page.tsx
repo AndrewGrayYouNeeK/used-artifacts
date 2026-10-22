@@ -6,6 +6,8 @@ import { getPublicIdentities } from "@/domains/identity/public-identity";
 import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
 import { requireStaff } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
+import { photoUrl } from "@/lib/storage/storage";
+import { AiAnalysisSummary } from "@/components/ai-analysis-summary";
 import { DecisionForm } from "./decision-form";
 
 export default function CompliancePage() {
@@ -22,6 +24,19 @@ interface ScreeningFlag {
   field: string;
   matchedText: string;
   reason: string;
+}
+
+interface ReusedPhotoFlag {
+  listingId: string;
+  distance: number;
+  linkedSeller: boolean;
+  sellerUserId: string;
+}
+
+function reusedPhotoFlags(flags: unknown): ReusedPhotoFlag[] {
+  if (!flags || typeof flags !== "object" || !("reusedPhotos" in flags)) return [];
+  const list = (flags as { reusedPhotos: unknown }).reusedPhotos;
+  return Array.isArray(list) ? (list as ReusedPhotoFlag[]) : [];
 }
 
 function screeningFlags(flags: unknown): ScreeningFlag[] {
@@ -41,6 +56,8 @@ async function Queue() {
           include: {
             category: { include: { parent: { select: { name: true } } } },
             provenanceStatements: { orderBy: { signedAt: "desc" }, take: 1, include: { template: true } },
+            photos: { orderBy: { sortOrder: "asc" } },
+            aiAnalyses: { orderBy: { createdAt: "desc" }, take: 1 },
           },
         },
       },
@@ -97,6 +114,8 @@ async function Queue() {
           const prices = l.askingPriceCents === null ? null : priceBreakdown(l.askingPriceCents, rates);
           const seller = identities.get(l.sellerUserId);
           const flags = screeningFlags(r.flags);
+          const reused = reusedPhotoFlags(r.flags);
+          const analysis = l.aiAnalyses[0];
           return (
             <article key={r.id} className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -122,6 +141,35 @@ async function Queue() {
                     </li>
                   ))}
                 </ul>
+              )}
+              {l.photos.length > 0 && (
+                <div className="mt-3 flex gap-2 overflow-x-auto">
+                  {l.photos.map((p) => (
+                    <a key={p.id} href={photoUrl(p.storageKey)} target="_blank" rel="noreferrer">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={photoUrl(p.storageKey)} alt="" className="h-24 w-24 rounded-lg object-cover ring-1 ring-stone-200" />
+                    </a>
+                  ))}
+                </div>
+              )}
+              {reused.length > 0 && (
+                <ul className="mt-3 space-y-1 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
+                  {reused.map((m) => (
+                    <li key={m.listingId}>
+                      <strong>Photo seen before</strong> on{" "}
+                      <Link href={`/listings/${m.listingId}`} className="underline">
+                        another listing
+                      </Link>{" "}
+                      ({m.distance === 0 ? "identical" : `${m.distance}-bit difference`}
+                      {m.sellerUserId === l.sellerUserId ? ", same seller" : m.linkedSeller ? ", linked account" : ", different seller"})
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {analysis && (
+                <div className="mt-3">
+                  <AiAnalysisSummary analysis={analysis} />
+                </div>
               )}
               <p className="mt-3 whitespace-pre-line text-sm text-stone-700">{l.description}</p>
               {prices && (

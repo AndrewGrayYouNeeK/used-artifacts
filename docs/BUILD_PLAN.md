@@ -502,3 +502,34 @@ Roadmap items 1 and 4. Auctions stay off.
 4. **Delivery confirmation without EasyPost** is a manual staff step. Add `EASYPOST_API_KEY` and `EASYPOST_WEBHOOK_SECRET` to automate it.
 5. **Stripe Connect setup:** enable Connect (Express) on the platform account, set the branding, create the webhook endpoint (platform and connected-account events), and add `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `LINKAGE_HASH_SECRET`, and `CRON_SECRET` as secrets. Confirm with Stripe that holding funds until delivery is allowed for our account (L4); the "buyer protection hold" wording is used in the UI pending counsel.
 6. **Photo storage:** create an R2 (or S3) bucket with a public CDN domain and add the `S3_*` and `STORAGE_PUBLIC_BASE_URL` secrets.
+
+## 13. Phase 3: AI photo analyzer (built)
+
+Roadmap item 8.
+
+**Pipeline**
+- Photos are re-encoded and stripped of metadata (Phase 2), then sent to a vision adapter (`VisionProvider`; Claude via the Messages API, forced to answer through one tool call with a JSON schema). Dev and tests use a simulator; production refuses it.
+- The output is validated with Zod and post-processed by **deterministic guardrail code** (`src/domains/ai/guardrails.ts`) before anyone sees it. Each `AiAnalysis` stores the raw output, normalized output, provider, model, prompt version, flags, and the guardrail actions applied. The database refuses edits and deletes of the output; only the listing link, photo ids, and seller decisions can be filled in, once.
+- **Every submission is analyzed**, so the analyzer can't be skipped. A seller can also run "Get suggestions" before submitting (30 runs per day). That run is reused at submission when it covered the same photos. If the seller changed the category since, the guardrails are re-applied to the stored output for the new category, with no new model call.
+- A provider outage or invalid output never blocks the seller. The analysis is recorded as unavailable (HIGH uncertainty) and staff review the listing as usual.
+
+**Guardrails (code, not just the prompt)**
+- **Native American attribution:** a Native American category (selected or suggested), or any mention of a tribe, "Indian", "Native American", "indigenous", "tribal", or an archaeological culture (Adena, Hopewell, Mississippian, Archaic, Woodland, Clovis…) forces `uncertainty = HIGH` and attaches the IACA disclosure.
+- **Maker claims stripped:** "Indian-made", "Navajo-made", "made by the Cherokee", "authentic Native American jewelry" and similar are rewritten to "style/attribution unverified".
+- **No authentication or grading:** grading or authentication fields in the output are dropped, and "authenticated", "certified", "museum-grade", "is authentic" and similar are rewritten to "unverified". The analyzer has no path to the grading tables.
+- **Ranges, never point estimates:** the value range is widened to a minimum spread for its uncertainty (1.25× LOW, 1.5× MEDIUM, 2× HIGH). Uncertainty is never lowered below the model's, and LOW becomes MEDIUM when the identification confidence is under 50%.
+- **Red flags:** possible human remains, funerary objects, sacred or ceremonial objects, cultural patrimony, and protected wildlife parts **hold the listing for compliance** (review reason `AI_FLAG`). A reviewer can only approve with written notes (20+ characters), and the approval is audited. Possible reproductions are flagged without the hold. The model's cleaned wording is also run through the compliance screening list; a block-level hit (e.g. "human bone") holds the listing too.
+- Unknown categories and unknown red-flag codes from the model are dropped, never trusted.
+
+**Seller and staff views**
+- The listing form shows the suggestions (category, title, materials, age, region) with "Use" buttons, an uncertainty badge, the identification with confidence, the value range ("not an appraisal"), observations, red flags, the IACA disclosure when attributed, and a notice that AI suggestions aren't authentication, grading, or appraisal. The seller's accepted and rejected suggestions are recorded.
+- The compliance queue shows each listing's photos, reused-photo matches, and the analysis (uncertainty, red flags, screening matches, flags, guardrail actions, model and prompt version, seller decisions).
+- The AI value range and uncertainty feed `ListingOutcome` for the Grading Stage 1 data.
+
+**Audit events:** `ai.analysis_recorded`.
+
+**Needs Andrew's decision or action**
+1. **Vision provider and key:** add `ANTHROPIC_API_KEY` as a secret. Request zero data retention from Anthropic for seller photos (L11), or tell us to switch providers; the adapter is one file.
+2. **Model choice:** `AI_VISION_MODEL` defaults to `claude-sonnet-4-5`. Pick the model you want to pay for; each analysis sends up to 8 photos.
+3. **Daily suggestion quota:** 30 runs per seller per day (`DAILY_SUGGESTION_LIMIT`). Submissions are always analyzed.
+4. **Over-triggering is deliberate:** words like "Archaic", "Woodland", or tribe names that are also common words ("Creek", "Crow") force HIGH uncertainty. Tell us if that's too noisy once real data arrives.

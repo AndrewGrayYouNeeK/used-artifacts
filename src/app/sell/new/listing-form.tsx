@@ -1,8 +1,10 @@
 "use client";
 
-import { startTransition, useActionState, useState } from "react";
+import { startTransition, useActionState, useRef, useState } from "react";
 import type { FormState } from "@/app/actions/auth";
-import { submitListingAction } from "@/app/actions/listings";
+import { submitListingAction, suggestFromPhotosAction, type SuggestState } from "@/app/actions/listings";
+import type { SuggestionField } from "@/domains/ai/output";
+import { AiSuggestions } from "./ai-suggestions";
 import { FormMessage, SubmitButton } from "@/components/form";
 import type { Attestation } from "@/domains/compliance/provenance-template";
 import { formatUsd, parseUsdToCents, priceBreakdown, type FeeRates } from "@/domains/pricing/pricing";
@@ -30,6 +32,7 @@ const ACQUISITION_SOURCES = [
 ] as const;
 
 const initial: FormState = { status: "idle" };
+const initialSuggest: SuggestState = { status: "idle" };
 
 const MAX_PHOTOS = 8;
 const MAX_EDGE = 1600;
@@ -108,6 +111,17 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
   const [source, setSource] = useState("");
   const [shippingInput, setShippingInput] = useState("");
   const [previews, setPreviews] = useState<string[]>([]);
+  const [title, setTitle] = useState("");
+  const [materials, setMaterials] = useState("");
+  const [estimatedAge, setEstimatedAge] = useState("");
+  const [regionOfOrigin, setRegionOfOrigin] = useState("");
+  const photosRef = useRef<HTMLInputElement>(null);
+  const [suggestState, suggest, suggesting] = useActionState(suggestFromPhotosAction, initialSuggest);
+  const [photosVersion, setPhotosVersion] = useState(0);
+  const [analyzedFor, setAnalyzedFor] = useState<string | null>(null);
+  const [accepted, setAccepted] = useState<Set<SuggestionField>>(new Set());
+  const currentInputs = `${photosVersion}:${categoryId}`;
+  const analysisCurrent = suggestState.status === "ready" && analyzedFor === currentInputs;
   const errors = state.status === "error" ? state.fieldErrors : undefined;
 
   const category = categories.find((c) => c.id === categoryId);
@@ -116,12 +130,43 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
   const prices = askingCents !== null && askingCents > 0 ? priceBreakdown(askingCents, rates) : null;
   const pct = (bps: number) => `${bps / 100}%`;
 
+  const availableFields = new Set<SuggestionField>(
+    nativeAmerican ? ["categoryId", "title", "materials", "estimatedAge", "regionOfOrigin"] : ["categoryId", "title"],
+  );
+  const applySuggestion = (field: SuggestionField, value: string) => {
+    const setters: Record<SuggestionField, (v: string) => void> = {
+      categoryId: (v) => {
+        setCategoryId(v);
+        setAnalyzedFor(`${photosVersion}:${v}`);
+      },
+      title: setTitle,
+      materials: setMaterials,
+      estimatedAge: setEstimatedAge,
+      regionOfOrigin: setRegionOfOrigin,
+    };
+    setters[field](value);
+    setAccepted((prev) => new Set(prev).add(field));
+  };
+  const analyze = async () => {
+    const files = Array.from(photosRef.current?.files ?? []).slice(0, MAX_PHOTOS);
+    const data = new FormData();
+    data.set("categoryId", categoryId);
+    for (const photo of await Promise.all(files.map(downscale))) data.append("photos", photo);
+    setAnalyzedFor(currentInputs);
+    setAccepted(new Set());
+    startTransition(() => suggest(data));
+  };
+
   return (
     <form
       className="space-y-8"
       onSubmit={async (e) => {
         e.preventDefault();
         const data = new FormData(e.currentTarget);
+        if (analysisCurrent && suggestState.status === "ready") {
+          data.set("aiAnalysisId", suggestState.analysisId);
+          for (const field of accepted) data.append("aiAccepted", field);
+        }
         const photos = data.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
         data.delete("photos");
         for (const photo of await Promise.all(photos.slice(0, MAX_PHOTOS).map(downscale))) data.append("photos", photo);
@@ -158,7 +203,7 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
           </select>
           <Errors errors={errors?.categoryId} />
         </label>
-        <TextInput label="Title" name="title" required errors={errors?.title} />
+        <TextInput label="Title" name="title" required errors={errors?.title} value={title} onChange={setTitle} />
         <label className="block space-y-1.5">
           <span className="text-sm font-medium text-stone-800">
             Description<span className="text-red-700"> *</span>
@@ -177,9 +222,9 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
             <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
               Native American category: extra details required
             </p>
-            <TextInput label="Region of origin" name="regionOfOrigin" required errors={errors?.regionOfOrigin} placeholder="e.g. Ohio River valley" />
-            <TextInput label="Estimated age or period" name="estimatedAge" required errors={errors?.estimatedAge} placeholder="e.g. Early Archaic" />
-            <TextInput label="Materials" name="materials" required errors={errors?.materials} placeholder="e.g. Flint Ridge chert" />
+            <TextInput label="Region of origin" name="regionOfOrigin" required errors={errors?.regionOfOrigin} placeholder="e.g. Ohio River valley" value={regionOfOrigin} onChange={setRegionOfOrigin} />
+            <TextInput label="Estimated age or period" name="estimatedAge" required errors={errors?.estimatedAge} placeholder="e.g. Early Archaic" value={estimatedAge} onChange={setEstimatedAge} />
+            <TextInput label="Materials" name="materials" required errors={errors?.materials} placeholder="e.g. Flint Ridge chert" value={materials} onChange={setMaterials} />
             <div className="rounded-lg bg-white p-3 text-xs text-stone-700 ring-1 ring-amber-200">{iacaDisclosure}</div>
             <label className="flex items-start gap-3 text-sm">
               <input type="checkbox" name="iacaAcknowledged" className="mt-0.5 h-4 w-4" />
@@ -198,12 +243,14 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
           <input
             type="file"
             name="photos"
+            ref={photosRef}
             accept="image/jpeg,image/png,image/webp,image/heic"
             multiple
             required
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []).slice(0, MAX_PHOTOS);
               setPreviews(files.map((f) => URL.createObjectURL(f)));
+              setPhotosVersion((v) => v + 1);
             }}
             className="block w-full text-sm"
           />
@@ -220,6 +267,17 @@ export function ListingForm({ rates, legalName, iacaDisclosure, template, catego
             ))}
           </div>
         )}
+        <AiSuggestions
+          state={suggestState}
+          pending={suggesting}
+          canAnalyze={previews.length > 0}
+          stale={suggestState.status === "ready" && !analysisCurrent}
+          onAnalyze={analyze}
+          accepted={accepted}
+          availableFields={availableFields}
+          onUse={applySuggestion}
+          iacaDisclosure={iacaDisclosure}
+        />
         {category?.requiresEnhancedReview && !nativeAmerican && (
           <p className="text-xs text-stone-500">This category gets an enhanced compliance review.</p>
         )}

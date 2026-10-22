@@ -63,6 +63,7 @@ model User {
   gradingSubmissions    GradingSubmission[]
   gradingResultsGraded  GradingResult[]         @relation("InHouseGrader")
   auditEvents           AuditEvent[]
+  aiAnalyses            AiAnalysis[]
 }
 
 /// Opaque session token lives in an httpOnly cookie; only its SHA-256 hash is stored.
@@ -934,19 +935,35 @@ enum AiUncertainty {
 }
 
 model AiAnalysis {
-  id               String        @id @default(cuid())
-  listingId        String?
-  photoIds         String[]
-  provider         String
-  model            String
-  promptVersion    String
-  rawOutput        Json
-  normalizedOutput Json
-  uncertainty      AiUncertainty
-  flags            String[]
-  guardrailActions String[]
-  createdAt        DateTime      @default(now())
-  listing          Listing?      @relation(fields: [listingId], references: [id])
+  id                String        @id @default(cuid())
+  /// Null for a pre-submission suggestion run; set when the listing is submitted.
+  listingId         String?
+  requestedByUserId String?
+  /// Category the seller had selected when the analysis ran (drives the Native American guardrail).
+  categoryId        String?
+  photoIds          String[]
+  /// Difference hashes of the analyzed photos, so a suggestion run is only reused for the same photos.
+  photoHashes       String[]
+  provider          String
+  model             String
+  promptVersion     String
+  rawOutput         Json
+  normalizedOutput  Json
+  uncertainty       AiUncertainty
+  flags             String[]
+  guardrailActions  String[]
+  /// A red flag (possible human remains, funerary, sacred, patrimony, protected wildlife) that holds the listing for compliance.
+  blocksPublishing  Boolean       @default(false)
+  /// Provider failure or invalid output; the listing is still reviewed by staff.
+  error             String?
+  /// Which suggestions the seller accepted into the listing and which they rejected.
+  sellerDecisions   Json?
+  createdAt         DateTime      @default(now())
+  listing           Listing?      @relation(fields: [listingId], references: [id])
+  requestedBy       User?         @relation(fields: [requestedByUserId], references: [id])
+
+  @@index([requestedByUserId, createdAt])
+  @@index([listingId])
 }
 
 // ───────────────────────────── Grading arm ─────────────────────────────
