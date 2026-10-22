@@ -33,6 +33,8 @@ model User {
   displayName     String
   role            UserRole   @default(USER)
   status          UserStatus @default(ACTIVE)
+  /// Share code for the referral program; created the first time the user opens their referrals page.
+  referralCode    String?    @unique
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -61,6 +63,7 @@ model User {
   fraudSignalsReviewed  FraudSignal[]           @relation("FraudSignalReviewer")
   referralsMade         Referral[]              @relation("Referrer")
   referredBy            Referral?               @relation("Referee")
+  referralPayouts       ReferralPayout[]
   badges                UserBadge[]
   gradingSubmissions    GradingSubmission[]
   gradingResultsGraded  GradingResult[]         @relation("InHouseGrader")
@@ -795,6 +798,8 @@ enum FraudDetector {
   SELF_RESALE
   RETRACTION_ABUSE
   NONPAY
+  /// A referrer earning on sales to themselves or a linked account, or recruiting their own second account.
+  REFERRAL_ABUSE
 }
 
 enum FraudSignalStatus {
@@ -893,7 +898,10 @@ enum ReferralBasis {
 }
 
 enum ReferralEarningStatus {
+  /// Accrued on release; waits out the chargeback window (payableAt).
   PENDING
+  /// Held by fraud checks until staff release or forfeit it.
+  FROZEN
   PAYABLE
   PAID
   CLAWED_BACK
@@ -911,12 +919,40 @@ model ReferralEarning {
   cappedAtFee      Boolean
   amountCents      Int
   status           ReferralEarningStatus @default(PENDING)
+  /// End of the chargeback window; PENDING becomes PAYABLE after this.
+  payableAt        DateTime
+  frozenReason     String?
+  clawbackReason   String?
+  payoutId         String?
   createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
   referral         Referral              @relation(fields: [referralId], references: [id])
   order            Order                 @relation(fields: [orderId], references: [id])
+  payout           ReferralPayout?       @relation(fields: [payoutId], references: [id])
   ledgerEntries    LedgerEntry[]
 
   @@unique([referralId, orderId])
+  @@index([status, payableAt])
+}
+
+/// One transfer of a referrer's payable earnings to their payout account (from the platform balance).
+model ReferralPayout {
+  id                   String            @id @default(cuid())
+  referrerUserId       String
+  amountCents          Int
+  idempotencyKey       String            @unique
+  destinationAccountId String
+  stripeTransferId     String?           @unique
+  /// PENDING until the provider confirms; REVERSED if cancelled before sending.
+  status               TransferStatus    @default(PENDING)
+  attempts             Int               @default(0)
+  lastError            String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  referrer             User              @relation(fields: [referrerUserId], references: [id])
+  earnings             ReferralEarning[]
+
+  @@index([status])
 }
 
 enum BadgeKind {

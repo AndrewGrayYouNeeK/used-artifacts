@@ -556,3 +556,31 @@ Roadmap item 10.
 **Audit events:** `enforcement.issued`, `enforcement.lifted`, `enforcement.expired`, `fraud.signal_confirmed`, `fraud.signal_dismissed`, `user.role_changed`.
 
 **Not in this phase:** owner two-factor sign-in (TOTP), required by section 8, ships with the closed-beta hardening in Phase 7. Until then, sensitive owner actions are protected by password re-entry.
+
+## 15. Phase 5: badges and referrals (built)
+
+Roadmap items 6 and 7.
+
+**Referrals** (`src/domains/growth/referrals.ts`)
+- Every account gets a share code and link on **Account → Referrals** (`/signup?ref=CODE`). Signing up through the link shows "Invited by …" and records a permanent `Referral`; the database refuses edits and deletes. Unknown codes are ignored.
+- When a recruit's sale is **released** (buyer confirmation, auto-release, or a dispute resolved in the seller's favor), the referrer earns **5% of the buyer price** (`REFERRAL_BASIS`, still pending Andrew), capped at the fees collected on that order. A partial refund lowers the basis. The ledger moves the amount from `platform_revenue` to `referral_payable:<referrer>`, so it comes out of the platform's take, never the seller's.
+- Earnings wait **30 days** (`REFERRAL_HOLD_DAYS`, the chargeback window), then become payable. The scheduled job pays each referrer by Stripe transfer from the platform balance once they have **$10** ready (`REFERRAL_MIN_PAYOUT_CENTS`). Payouts need an active account, **a verified ID** (section 5.2), and a Stripe payout account (the same one sellers set up).
+- **Fraud freezes:** an earning is frozen (and a `REFERRAL_ABUSE` fraud signal raised) when the referrer bought the item, the buyer is linked to the referrer, or the recruit is linked to the referrer (likely the same person). Staff release or forfeit it from Trust and safety. A forfeit reverses it in the ledger, records a `FEE_FORFEIT` action, and emails the referrer.
+- **Clawbacks:** a chargeback after release, or banning the referrer, reverses any unpaid earnings. The database only allows these status moves: pending → payable, frozen, or clawed back; frozen → pending, payable, or clawed back; payable → paid, frozen, or clawed back. Paid and clawed back are final, and amounts never change.
+
+**Badges** (`src/domains/growth/badges.ts`)
+- **Volume badges** (First Sale, Established Seller at 10 sales, Trusted Dealer at 50, Collector at 10 purchases; thresholds live in each badge's `criteria`) are recounted for both parties on every release, on a chargeback after release, and when staff confirm a fraud signal on an order. Only clean sales count: released, no chargeback, no open or confirmed fraud signal on the order, the other party isn't a linked account, and at most 3 orders with the same person (`BADGE_MAX_SALES_PER_COUNTERPARTY`). A badge is revoked automatically if the count drops below its threshold.
+- A badge revoked by staff stays revoked until the revocation is lifted on appeal. Badge awards can't be deleted, so history is kept.
+- **Beta Founder** goes to each of the first 100 sellers when their first listing is approved (`BETA_FOUNDER_LIMIT`). The database also refuses more awards than the badge's `firstNSellers`, counting revoked ones.
+- The badges are created by the migration, so every environment has them. The Proprietor badge is separate and untouched by this code.
+
+**Staff tools:** frozen earnings on Trust and safety, referral details on each user page, and "referral earnings owed" on the overview.
+
+**Audit events:** `referral.created`, `referral.earning_accrued`, `referral.earnings_payable`, `referral.earning_unfrozen`, `referral.earning_clawed_back`, `referral.payout_paid`, `referral.payout_cancelled`, `badge.awarded`, `badge.revoked`.
+
+**Needs Andrew's decision or action**
+1. **Referral basis** is still the open question from section 0.2: buyer price ($5.50 per $100 asking, the current default) or asking price ($5.00).
+2. **Payout timing:** the 30-day hold and $10 minimum are proposals. Shorter holds pay sooner but risk paying on sales that are later charged back.
+3. **Referrers who don't sell** have to set up a Stripe payout account through the selling flow to get paid. Tell us if you'd rather offer a payouts-only setup.
+4. **Counsel (L7):** the referral disclosure on the referrals page is marked DRAFT – PENDING LAWYER REVIEW (FTC endorsement wording and 1099 reporting).
+5. **Badge names and thresholds** are the seeded ones; change them any time in the `Badge` table.

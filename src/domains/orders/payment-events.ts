@@ -1,5 +1,7 @@
 import { hmacHex } from "@/lib/crypto";
 import { writeAuditEvent, type Tx } from "@/domains/audit/audit";
+import { recomputeVolumeBadges } from "@/domains/growth/badges";
+import { clawBackOrderEarnings } from "@/domains/growth/referrals";
 import { accounts, post } from "@/domains/payments/ledger";
 import type { PaymentEvent, ShippingAddress } from "@/domains/payments/provider";
 import {
@@ -204,6 +206,7 @@ async function chargeDisputed(
   const order = payment.order;
   const stillHeld = (HELD_STATUSES as readonly string[]).includes(order.status) && order.status !== "DISPUTED";
   if (stillHeld) await transition(tx, order, "DISPUTE_OPENED");
+  else await clawBackOrderEarnings(tx, order.id, "Card chargeback after release");
   const dispute = await tx.dispute.create({
     data: {
       orderId: order.id,
@@ -213,6 +216,9 @@ async function chargeDisputed(
       evidenceKeys: [],
     },
   });
+  if (!stillHeld) {
+    for (const userId of [order.sellerUserId, order.buyerUserId]) await recomputeVolumeBadges(tx, userId);
+  }
   await writeAuditEvent(tx, {
     actorType: "WEBHOOK",
     action: stillHeld ? "order.chargeback_opened" : "order.chargeback_after_release",

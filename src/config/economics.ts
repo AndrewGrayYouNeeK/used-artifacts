@@ -22,6 +22,8 @@ const EconomicsEnvSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  REFERRAL_HOLD_DAYS: z.coerce.number().int().min(0).max(180).default(30),
+  REFERRAL_MIN_PAYOUT_CENTS: z.coerce.number().int().min(100).default(1000),
   ESCROW_AUTO_RELEASE_DAYS: z.coerce.number().int().min(0).default(3),
   SELLER_SHIP_BY_DAYS: z.coerce.number().int().min(1).default(5),
   CHECKOUT_HOLD_MINUTES: z.coerce.number().int().min(30).max(1440).default(60),
@@ -34,6 +36,10 @@ export interface EconomicsConfig extends FeeRates {
   /** Which amount "5% of the sale" is computed on. Pending Andrew's confirmation (BUILD_PLAN 0.2). */
   referralBasis: ReferralBasis;
   referralCapAtPlatformFee: boolean;
+  /** Earnings wait this long after release (the chargeback window) before they can be paid. */
+  referralHoldDays: number;
+  /** Payable earnings are paid out once they add up to at least this much. */
+  referralMinPayoutCents: number;
   escrowAutoReleaseDays: number;
   /** Paid orders not marked shipped within this many days are cancelled and refunded. */
   sellerShipByDays: number;
@@ -52,6 +58,8 @@ export function loadEconomicsConfig(
     referralBps: parsed.REFERRAL_BPS,
     referralBasis: parsed.REFERRAL_BASIS,
     referralCapAtPlatformFee: parsed.REFERRAL_CAP_AT_PLATFORM_FEE,
+    referralHoldDays: parsed.REFERRAL_HOLD_DAYS,
+    referralMinPayoutCents: parsed.REFERRAL_MIN_PAYOUT_CENTS,
     escrowAutoReleaseDays: parsed.ESCROW_AUTO_RELEASE_DAYS,
     sellerShipByDays: parsed.SELLER_SHIP_BY_DAYS,
     checkoutHoldMinutes: parsed.CHECKOUT_HOLD_MINUTES,

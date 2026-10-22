@@ -1,5 +1,5 @@
 import type { Db } from "@/lib/db";
-import type { AccountLinkSignal } from "@/generated/prisma/enums";
+import type { AccountLinkSignal, FraudDetector } from "@/generated/prisma/enums";
 import { writeAuditEvent, type Tx } from "@/domains/audit/audit";
 
 /**
@@ -114,7 +114,7 @@ export async function checkSelfDealing(
 export async function raiseFraudSignal(
   tx: Tx,
   input: {
-    detector: "SELF_BUY" | "SHILL" | "CIRCLE_TRADE" | "SELF_RESALE" | "RETRACTION_ABUSE" | "NONPAY";
+    detector: Exclude<FraudDetector, "DUPLICATE_IDENTITY">;
     subjectType: string;
     subjectId: string;
     score: number;

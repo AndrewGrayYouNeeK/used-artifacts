@@ -66,7 +66,12 @@ async function Dashboard() {
         <dl className="mt-4 grid gap-4 sm:grid-cols-4">
           <Metric label="GMV, last 30 days" value={formatUsd(metrics.sales.last30.gmvCents)} sub={`${metrics.sales.last30.orders} released order(s)`} />
           <Metric label="Platform fees, last 30 days" value={formatUsd(metrics.sales.last30.platformFeeCents)} sub={`${formatUsd(metrics.sales.allTime.platformFeeCents)} all time`} />
-          <Metric label="Platform revenue (ledger)" value={formatUsd(metrics.sales.platformRevenueCents)} sub="after referral payouts" />
+          <Metric label="Platform revenue (ledger)" value={formatUsd(metrics.sales.platformRevenueCents)} sub="after referral shares" />
+          <Metric
+            label="Referral earnings owed"
+            value={formatUsd(metrics.sales.referralOwedCents)}
+            sub={`${metrics.sales.frozenReferralEarnings} frozen for review`}
+          />
           <Metric label="Dispute rate, 90 days" value={percent(metrics.sales.disputeRate90)} sub={`${metrics.sales.openDisputes} open`} />
           <Metric label="Users" value={String(metrics.users.total)} sub={`${metrics.users.newLast30} new in 30 days`} />
           <Metric label="Verified sellers" value={String(metrics.users.verifiedSellers)} sub={`${metrics.storefronts.payoutsEnabled}/${metrics.storefronts.total} storefronts can take payouts`} />

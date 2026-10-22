@@ -14,6 +14,7 @@ const PlatformEnvSchema = z.object({
     .pipe(z.array(z.enum(Vertical)).min(1)),
   HIGH_VALUE_THRESHOLD_CENTS: z.coerce.number().int().min(0).default(50_000),
   BETA_FOUNDER_LIMIT: z.coerce.number().int().min(0).default(100),
+  BADGE_MAX_SALES_PER_COUNTERPARTY: z.coerce.number().int().min(1).default(3),
   /** Off until Kentucky auctioneer licensing (BUILD_PLAN L1) is answered. */
   AUCTIONS_ENABLED: z
     .enum(["true", "false"])
@@ -25,6 +26,8 @@ export interface PlatformConfig {
   enabledVerticals: Vertical[];
   highValueThresholdCents: number;
   betaFounderLimit: number;
+  /** Volume badges count at most this many sales to (or purchases from) the same person. */
+  badgeMaxSalesPerCounterparty: number;
   auctionsEnabled: boolean;
 }
 
@@ -36,6 +39,7 @@ export function loadPlatformConfig(
     enabledVerticals: parsed.ENABLED_VERTICALS,
     highValueThresholdCents: parsed.HIGH_VALUE_THRESHOLD_CENTS,
     betaFounderLimit: parsed.BETA_FOUNDER_LIMIT,
+    badgeMaxSalesPerCounterparty: parsed.BADGE_MAX_SALES_PER_COUNTERPARTY,
     auctionsEnabled: parsed.AUCTIONS_ENABLED,
   };
 }

@@ -52,6 +52,7 @@ async function UserDetail({
           userBadge: { include: { badge: { select: { name: true } } } },
         },
       },
+      referredBy: { include: { referrer: { select: { id: true, displayName: true } } } },
       linksA: { include: { userB: { select: { id: true, displayName: true, status: true } } } },
       linksB: { include: { userA: { select: { id: true, displayName: true, status: true } } } },
       loginEvents: { orderBy: { at: "desc" }, take: 15 },
@@ -59,13 +60,15 @@ async function UserDetail({
   });
   if (!user) notFound();
 
-  const [listings, purchases, sales, signals, aboutEvents, byEvents] = await Promise.all([
+  const [listings, purchases, sales, signals, aboutEvents, byEvents, recruits, earnings] = await Promise.all([
     db.listing.findMany({ where: { sellerUserId: id }, orderBy: { createdAt: "desc" }, take: 50, select: { id: true, title: true, status: true, askingPriceCents: true, createdAt: true } }),
     db.order.findMany({ where: { buyerUserId: id }, orderBy: { createdAt: "desc" }, take: 15, include: { listing: { select: { title: true } } } }),
     db.order.findMany({ where: { sellerUserId: id }, orderBy: { createdAt: "desc" }, take: 15, include: { listing: { select: { title: true } } } }),
     openSignalsForUser(db, id),
     searchAuditEvents(db, { subjectType: "User", subjectId: id, limit: 25 }),
     searchAuditEvents(db, { actorUserId: id, limit: 25 }),
+    db.referral.count({ where: { referrerUserId: id } }),
+    db.referralEarning.groupBy({ by: ["status"], where: { referral: { referrerUserId: id } }, _sum: { amountCents: true } }),
   ]);
   const isOwner = staff.role === "OWNER";
   const isTargetOwner = user.role === "OWNER";
@@ -213,6 +216,29 @@ async function UserDetail({
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <h2 className="font-serif text-lg font-semibold">Referrals</h2>
+        <p className="mt-2 text-sm">
+          {user.referredBy ? (
+            <>
+              Referred by{" "}
+              <Link href={`/admin/users/${user.referredBy.referrer.id}`} className="underline">
+                {user.referredBy.referrer.displayName}
+              </Link>{" "}
+              on {day(user.referredBy.createdAt)}.
+            </>
+          ) : (
+            "Not referred."
+          )}{" "}
+          Referred {recruits} account{recruits === 1 ? "" : "s"}.
+        </p>
+        {earnings.length > 0 && (
+          <p className="mt-1 text-sm text-stone-600">
+            Earnings: {earnings.map((g) => `${label(g.status)} ${formatUsd(g._sum.amountCents ?? 0)}`).join(" · ")}
+          </p>
         )}
       </section>
 

@@ -78,7 +78,7 @@ export class StripeConnectProvider implements PaymentsProvider {
   async createTransfer(input: {
     accountId: string;
     amountCents: number;
-    sourceChargeId: string;
+    sourceChargeId?: string;
     transferGroup: string;
     idempotencyKey: string;
   }) {

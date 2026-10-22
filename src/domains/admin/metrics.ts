@@ -13,6 +13,9 @@ export interface GmMetrics {
     allTime: { orders: number; gmvCents: number; platformFeeCents: number };
     heldCents: number;
     platformRevenueCents: number;
+    /** Accrued referral earnings not yet paid out (all statuses except PAID and CLAWED_BACK). */
+    referralOwedCents: number;
+    frozenReferralEarnings: number;
     openDisputes: number;
     /** Disputed share of orders paid in the last 90 days. */
     disputeRate90: number | null;
@@ -41,6 +44,8 @@ export async function gmMetrics(db: Db, now: Date = new Date()): Promise<GmMetri
     salesAll,
     heldCents,
     platformRevenueCents,
+    referralOwedCents,
+    frozenReferralEarnings,
     openDisputes,
     paid90,
     disputed90,
@@ -67,6 +72,8 @@ export async function gmMetrics(db: Db, now: Date = new Date()): Promise<GmMetri
     db.order.aggregate({ where: released, _count: { _all: true }, _sum: { buyerPriceCents: true, platformFeeCents: true } }),
     kindCreditBalance(db, "BUYER_HELD"),
     kindCreditBalance(db, "PLATFORM_REVENUE"),
+    kindCreditBalance(db, "REFERRAL_PAYABLE"),
+    db.referralEarning.count({ where: { status: "FROZEN" } }),
     db.dispute.count({ where: { status: { in: ["OPEN", "UNDER_REVIEW"] } } }),
     db.order.count({ where: { paidAt: { gte: d90 } } }),
     db.order.count({ where: { paidAt: { gte: d90 }, disputes: { some: {} } } }),
@@ -92,6 +99,8 @@ export async function gmMetrics(db: Db, now: Date = new Date()): Promise<GmMetri
       allTime: { orders: salesAll._count._all, gmvCents: salesAll._sum.buyerPriceCents ?? 0, platformFeeCents: salesAll._sum.platformFeeCents ?? 0 },
       heldCents,
       platformRevenueCents,
+      referralOwedCents,
+      frozenReferralEarnings,
       openDisputes,
       disputeRate90: ratio(disputed90, paid90),
     },

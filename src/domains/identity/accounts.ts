@@ -9,6 +9,7 @@ import {
   verifyPassword,
 } from "@/lib/auth/password";
 import { writeAuditEvent } from "@/domains/audit/audit";
+import { recordReferral } from "@/domains/growth/referrals";
 import { linkByDevice } from "@/domains/trust/linkage";
 
 export const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -44,6 +45,8 @@ export const SignupSchema = z.object({
     .min(2, { error: "Display name must be at least 2 characters." })
     .max(60, { error: "Display name must be at most 60 characters." }),
   password: PasswordSchema,
+  /** Share code from a referral link; unknown codes are ignored. */
+  referralCode: z.string().trim().max(32).optional(),
 });
 
 export type SignupInput = z.infer<typeof SignupSchema>;
@@ -95,6 +98,7 @@ export async function signup(
       subjectId: created.id,
       ipHash: ctx.ipHash,
     });
+    if (input.referralCode) await recordReferral(tx, { refereeUserId: created.id, code: input.referralCode, ipHash: ctx.ipHash });
     return created;
   });
   await sendVerificationEmail(deps, user);

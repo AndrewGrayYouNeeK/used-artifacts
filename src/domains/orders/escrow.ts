@@ -1,9 +1,11 @@
 import { writeAuditEvent, type AuditInput, type Tx } from "@/domains/audit/audit";
 import { accounts, post } from "@/domains/payments/ledger";
 import { recordListingOutcome } from "@/domains/listings/outcomes";
+import { recomputeVolumeBadges } from "@/domains/growth/badges";
+import { accrueReferralEarning } from "@/domains/growth/referrals";
 import { checkIdentityGate } from "@/domains/identity/verification/verification";
 import type { Order, OrderStatus } from "@/generated/prisma/client";
-import { clock, type OrdersDeps } from "./deps";
+import { clock, econ, platformConfig, type OrdersDeps } from "./deps";
 import { nextStatus, type OrderEvent } from "./state-machine";
 
 type Actor = Pick<AuditInput, "actorUserId" | "actorType" | "ipHash">;
@@ -88,6 +90,10 @@ export async function releaseFunds(
       },
     });
     transferId = transfer.id;
+  }
+  await accrueReferralEarning(tx, { economics: econ(deps), now }, order, refundCents);
+  for (const userId of [order.sellerUserId, order.buyerUserId]) {
+    await recomputeVolumeBadges(tx, userId, { config: platformConfig(deps), now });
   }
   await recordListingOutcome(tx, {
     listingId: order.listingId,

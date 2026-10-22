@@ -57,7 +57,8 @@ export interface PaymentsProvider {
   createTransfer(input: {
     accountId: string;
     amountCents: number;
-    sourceChargeId: string;
+    /** Ties the transfer to a charge's funds (seller payouts). Omitted for referral payouts from the platform balance. */
+    sourceChargeId?: string;
     transferGroup: string;
     idempotencyKey: string;
   }): Promise<{ transferId: string }>;

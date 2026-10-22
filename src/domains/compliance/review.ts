@@ -1,5 +1,6 @@
 import type { Db } from "@/lib/db";
 import { writeAuditEvent } from "@/domains/audit/audit";
+import { awardBetaFounder } from "@/domains/growth/badges";
 import type { RequestContext } from "@/domains/identity/accounts";
 
 export type ReviewDecision = "APPROVE" | "REJECT";
@@ -76,6 +77,7 @@ export async function decideListingReview(
       where: { id: review.listing.id },
       data: { status: listingStatus, publishedAt: approve ? now : null },
     });
+    if (approve) await awardBetaFounder(tx, review.listing.sellerUserId, { now });
     await writeAuditEvent(tx, {
       actorUserId: input.reviewerId,
       actorType: "ADMIN",

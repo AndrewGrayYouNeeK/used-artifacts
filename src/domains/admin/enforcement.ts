@@ -1,6 +1,8 @@
 import type { EnforcementType, FraudSignalStatus, UserRole } from "@/generated/prisma/enums";
 import { writeAuditEvent, type Tx } from "@/domains/audit/audit";
 import type { IdentityDeps, RequestContext } from "@/domains/identity/accounts";
+import { recomputeVolumeBadges } from "@/domains/growth/badges";
+import { forfeitUnpaidEarnings } from "@/domains/growth/referrals";
 import { recordListingOutcome } from "@/domains/listings/outcomes";
 import { DAY_MS } from "@/domains/orders/deps";
 
@@ -164,6 +166,7 @@ export async function takeEnforcementAction(
             where: { userId: target.id, type: "SUSPENSION", liftedAt: null },
             data: { liftedAt: now, liftedById: input.actorId, liftReason: "Superseded by a ban" },
           });
+          await forfeitUnpaidEarnings(tx, target.id, "Account banned", { actorUserId: input.actorId, actorType: "ADMIN", ipHash: ctx.ipHash });
         } else {
           noticeExtra = `until ${new Date(now.getTime() + input.suspensionDays! * DAY_MS).toISOString().slice(0, 10)}`;
         }
@@ -328,6 +331,10 @@ export async function reviewFraudSignal(
       data: { status: input.status, reviewedById: input.actorId, reviewedAt: clock(deps), reviewNotes: notes },
     });
     if (updated.count !== 1) return { ok: false, reason: "ALREADY_REVIEWED" } as const;
+    if (input.status === "CONFIRMED" && signal.subjectType === "Order") {
+      const order = await tx.order.findUnique({ where: { id: signal.subjectId }, select: { sellerUserId: true, buyerUserId: true } });
+      if (order) for (const userId of [order.sellerUserId, order.buyerUserId]) await recomputeVolumeBadges(tx, userId);
+    }
     await writeAuditEvent(tx, {
       actorUserId: input.actorId,
       actorType: "ADMIN",

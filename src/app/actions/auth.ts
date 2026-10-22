@@ -35,6 +35,7 @@ export async function signupAction(_prev: FormState, formData: FormData): Promis
     email: str(formData, "email"),
     displayName: str(formData, "displayName"),
     password: str(formData, "password"),
+    referralCode: str(formData, "ref") || undefined,
   });
   if (!parsed.success) {
     return {

@@ -45,6 +45,16 @@ async function AccountDetails() {
         </p>
       </div>
       <IdentityStatusCard status={verification?.status ?? null} />
+      <Link
+        href="/account/referrals"
+        className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white p-6 shadow-sm hover:border-stone-400"
+      >
+        <div>
+          <h2 className="font-serif text-lg font-semibold">Referrals</h2>
+          <p className="mt-1 text-sm text-stone-500">Share your link and earn on every sale by sellers you bring in.</p>
+        </div>
+        <span className="text-sm font-medium">→</span>
+      </Link>
     </div>
   );
 }

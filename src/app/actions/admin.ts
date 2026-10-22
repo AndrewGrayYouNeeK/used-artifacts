@@ -11,6 +11,7 @@ import {
   takeEnforcementAction,
   type ManualEnforcementType,
 } from "@/domains/admin/enforcement";
+import { decideFrozenEarning } from "@/domains/growth/referrals";
 import { requireOwner, requireStaff } from "@/lib/auth/dal";
 import { verifyPassword } from "@/lib/auth/password";
 import { requestContext } from "@/lib/auth/session";
@@ -173,4 +174,32 @@ export async function setUserRoleAction(_prev: FormState, formData: FormData): P
   }
   revalidatePath("/admin", "layout");
   return { status: "success", message: role === "MODERATOR" ? "Now a moderator." : "Moderator access removed." };
+}
+
+export async function decideFrozenEarningAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const staff = await requireStaff();
+  const decision = str(formData, "decision");
+  if (decision !== "RELEASE" && decision !== "FORFEIT") return { status: "error", message: "Choose release or forfeit." };
+  const result = await decideFrozenEarning(
+    identityDeps(),
+    { actorId: staff.id, earningId: str(formData, "earningId"), decision, reason: str(formData, "reason") },
+    await requestContext(),
+  );
+  if (!result.ok) {
+    switch (result.reason) {
+      case "REASON_REQUIRED":
+        return { status: "error", message: "Record what you found." };
+      case "NOT_FROZEN":
+        return { status: "error", message: "This earning was already decided." };
+      case "NOT_STAFF":
+      case "NOT_FOUND":
+        return { status: "error", message: "That earning isn't available." };
+      default: {
+        const exhaustive: never = result.reason;
+        throw new Error(`Unhandled earning decision failure: ${String(exhaustive)}`);
+      }
+    }
+  }
+  revalidatePath("/admin", "layout");
+  return { status: "success", message: decision === "RELEASE" ? "Released to the normal payout schedule." : "Forfeited and recorded." };
 }

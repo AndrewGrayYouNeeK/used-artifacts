@@ -1,8 +1,9 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { reviewFraudSignalAction } from "@/app/actions/admin";
+import { decideFrozenEarningAction, reviewFraudSignalAction } from "@/app/actions/admin";
 import { ActionForm, inputClass } from "@/components/action-form";
 import { signalAccounts } from "@/domains/admin/signals";
+import { formatUsd } from "@/domains/pricing/pricing";
 import { requireStaff } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
 
@@ -22,7 +23,7 @@ const time = (d: Date) => d.toISOString().replace("T", " ").slice(0, 16);
 
 async function Trust() {
   await requireStaff();
-  const [signals, active, reviewed] = await Promise.all([
+  const [signals, active, reviewed, frozen] = await Promise.all([
     db.fraudSignal.findMany({ where: { status: "OPEN" }, orderBy: [{ score: "desc" }, { createdAt: "asc" }], take: 100 }),
     db.enforcementAction.findMany({
       where: { liftedAt: null, type: { in: ["SUSPENSION", "BAN"] } },
@@ -35,6 +36,15 @@ async function Trust() {
       orderBy: { reviewedAt: "desc" },
       take: 20,
       include: { reviewedBy: { select: { displayName: true } } },
+    }),
+    db.referralEarning.findMany({
+      where: { status: "FROZEN" },
+      orderBy: { createdAt: "asc" },
+      take: 100,
+      include: {
+        referral: { include: { referrer: { select: { id: true, displayName: true } }, referee: { select: { id: true, displayName: true } } } },
+        order: { select: { id: true, buyerUserId: true, listing: { select: { title: true } } } },
+      },
     }),
   ]);
   const accounts = await signalAccounts(db, signals);
@@ -82,6 +92,48 @@ async function Trust() {
                   <option value="CONFIRMED">Confirm</option>
                 </select>
                 <input name="notes" required minLength={5} placeholder="What you found" className={inputClass} />
+              </ActionForm>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <h2 className="font-serif text-lg font-semibold">Frozen referral earnings</h2>
+        <p className="mt-1 text-sm text-stone-500">
+          Held because the buyer, referrer, or recruit look linked. Release puts the earning back on the normal schedule;
+          forfeit reverses it and records a fee forfeit against the referrer.
+        </p>
+        {frozen.length === 0 && <p className="mt-4 text-sm text-stone-500">Nothing frozen.</p>}
+        <ul className="mt-4 space-y-4">
+          {frozen.map((e) => (
+            <li key={e.id} className="rounded-xl border border-stone-100 p-4 text-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="font-medium">
+                  {formatUsd(e.amountCents)} to{" "}
+                  <Link href={`/admin/users/${e.referral.referrer.id}`} className="underline">
+                    {e.referral.referrer.displayName}
+                  </Link>{" "}
+                  on a sale by{" "}
+                  <Link href={`/admin/users/${e.referral.referee.id}`} className="underline">
+                    {e.referral.referee.displayName}
+                  </Link>
+                </span>
+                <span className="text-xs text-stone-500">
+                  {e.order.listing.title} · {time(e.createdAt)} ·{" "}
+                  <Link href={`/admin/users/${e.order.buyerUserId}`} className="underline">
+                    buyer
+                  </Link>
+                </span>
+              </div>
+              <p className="mt-1 text-red-800">{e.frozenReason}</p>
+              <ActionForm action={decideFrozenEarningAction} submitLabel="Record decision" variant="secondary" className="mt-3 grid gap-2 sm:grid-cols-[auto_1fr_auto]">
+                <input type="hidden" name="earningId" value={e.id} />
+                <select name="decision" className={inputClass} defaultValue="FORFEIT">
+                  <option value="FORFEIT">Forfeit</option>
+                  <option value="RELEASE">Release</option>
+                </select>
+                <input name="reason" required minLength={5} placeholder="What you found (a forfeit reason is emailed)" className={inputClass} />
               </ActionForm>
             </li>
           ))}
