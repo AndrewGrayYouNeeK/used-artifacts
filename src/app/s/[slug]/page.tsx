@@ -25,7 +25,7 @@ async function Storefront({ params }: { params: PageProps<"/s/[slug]">["params"]
       listings: {
         where: { status: "LIVE" },
         orderBy: { publishedAt: "desc" },
-        include: { photos: { orderBy: { sortOrder: "asc" }, take: 1 } },
+        include: { photos: { orderBy: { sortOrder: "asc" }, take: 1 }, gradingSubmissions: { where: { results: { some: { status: "PUBLISHED", tierAwarded: "AUTHENTICATED" } } }, select: { id: true }, take: 1 } },
       },
     },
   });

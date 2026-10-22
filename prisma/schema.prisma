@@ -70,6 +70,7 @@ model User {
   badges                UserBadge[]
   gradingSubmissions    GradingSubmission[]
   gradingResultsGraded  GradingResult[]         @relation("InHouseGrader")
+  gradingResultsEntered GradingResult[]         @relation("GradingRecorder")
   auditEvents           AuditEvent[]
   aiAnalyses            AiAnalysis[]
   twoFactor             TwoFactorCredential?
@@ -1185,12 +1186,17 @@ model GradingSubmission {
   paymentId               String?
   status                  GradingSubmissionStatus @default(SUBMITTED)
   assignedAuthenticatorId String?
+  /// What the seller or owner asked the partner to look at; partner findings go on the result.
+  notes                   String?
   createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @default(now()) @updatedAt
   listing                 Listing?                @relation(fields: [listingId], references: [id])
   owner                   User                    @relation(fields: [ownerUserId], references: [id])
   category                Category                @relation(fields: [categoryId], references: [id])
   assignedAuthenticator   Authenticator?          @relation(fields: [assignedAuthenticatorId], references: [id])
   results                 GradingResult[]
+
+  @@index([status, createdAt])
 }
 
 enum GradingResultStatus {
@@ -1219,8 +1225,12 @@ model GradingResult {
   status                  GradingResultStatus @default(DRAFT)
   publishedAt             DateTime?
   revokedAt               DateTime?
+  revokeReason            String?
+  /// Staff member who entered a partner's result (Stage 1 partners don't sign in).
+  recordedById            String?
   createdAt               DateTime            @default(now())
   submission              GradingSubmission   @relation(fields: [submissionId], references: [id])
+  recordedBy              User?               @relation("GradingRecorder", fields: [recordedById], references: [id])
   rubric                  GradingRubric?      @relation(fields: [rubricId], references: [id])
   gradedByAuthenticator   Authenticator?      @relation(fields: [gradedByAuthenticatorId], references: [id])
   gradedByUser            User?               @relation("InHouseGrader", fields: [gradedByUserId], references: [id])

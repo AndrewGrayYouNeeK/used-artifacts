@@ -12,6 +12,7 @@ import { getPublicIdentity } from "@/domains/identity/public-identity";
 import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
 import { ActionForm } from "@/components/action-form";
 import { buyNowAction } from "@/app/actions/orders";
+import { listingAuthentication } from "@/domains/grading/authentication";
 import { recordListingView } from "@/domains/listings/manage";
 import { getCurrentUser } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
@@ -64,6 +65,7 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
   const prices = listing.askingPriceCents === null ? null : priceBreakdown(listing.askingPriceCents, feeRates());
   const auction = listing.format === "AUCTION" && platform.auctionsEnabled ? await auctionView(db, listing, viewer?.id ?? null) : null;
   const statement = listing.provenanceStatements[0];
+  const authentication = await listingAuthentication(db, listing.id);
 
   return (
     <article className="space-y-6">
@@ -92,6 +94,15 @@ async function Listing({ params }: { params: PageProps<"/listings/[id]">["params
           {listing.category.parent?.name} › {listing.category.name}
         </p>
         <h1 className="mt-2 font-serif text-3xl font-semibold">{listing.title}</h1>
+        {authentication && (
+          <div className="mt-3 inline-flex flex-wrap items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-900 ring-1 ring-emerald-200">
+            <span className="font-semibold">Authenticated by partner</span>
+            <span>
+              {authentication.partner} · certificate <span className="font-mono">{authentication.certificateNumber}</span> ·{" "}
+              {authentication.publishedAt.toISOString().slice(0, 10)}
+            </span>
+          </div>
+        )}
         {prices && <p className="mt-3 text-2xl font-semibold">{formatUsd(prices.buyerPriceCents)}</p>}
         <p className="mt-1 text-xs text-stone-500">
           No fees added at checkout.{" "}

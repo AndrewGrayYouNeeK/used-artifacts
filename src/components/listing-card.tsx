@@ -11,6 +11,8 @@ export interface ListingCardData {
   storefront?: { name: string };
   /** The live auction, for AUCTION listings (amounts are already buyer prices). */
   auctions?: { currentPriceCents: number | null; startingBidCents: number }[];
+  /** Submissions with a published partner authentication (Grading Stage 1). */
+  gradingSubmissions?: { id: string }[];
 }
 
 /** Public card: shows only the buyer price (asking + buyer fee). */
@@ -41,6 +43,11 @@ export function ListingCard({ listing }: { listing: ListingCardData }) {
           </p>
         )}
         {listing.storefront && <p className="mt-1 text-xs text-stone-500">{listing.storefront.name}</p>}
+        {listing.gradingSubmissions?.length ? (
+          <p className="mt-2 inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800 ring-1 ring-emerald-200">
+            Authenticated by partner
+          </p>
+        ) : null}
       </div>
     </Link>
   );

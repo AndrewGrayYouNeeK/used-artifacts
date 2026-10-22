@@ -1,6 +1,6 @@
 # Used Artifacts — Build Plan
 
-Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phases 0 through 7 and Phase 9 are built (sections 10 to 18); auctions are built but switched off. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
+Status: **APPROVED by Andrew (2026-10-22).** Owner decisions are recorded in section 0. Phases 0 through 7, Phase 9, and Grading Stage 1 (7a) are built (sections 10 to 19); auctions are built but switched off, and antiques stay hidden. This plan covers the stack, the data model, the architecture, phased milestones mapped to the 11 roadmap sections, third-party services, and open legal questions.
 
 ---
 
@@ -685,3 +685,38 @@ Roadmap item 10 hardening (section 5.3) and the launch-readiness items that don'
 **Needs Andrew's decision or action**
 1. **Tuning:** the 90-day window and the 2 to 4 cycle length come from section 5.3. Review the first weeks of beta signals and say if the scan is too noisy.
 2. **Counsel sign-off on every legal template** (L1 to L11) is still required before the public launch. That can't be done in code.
+
+## 19. Grading Stage 1: partner authentication (built)
+
+Roadmap item 11, Stage 1 (section 6.2). Stage 2 (in-house rubric grades), MUSEUM_GRADE, the public verify page, and antiques are not built. `ENABLED_VERTICALS` stays `ARTIFACT`.
+
+**Partners** (Admin → Grading, owner only)
+- The owner adds 1–2 partner authenticators: name, organization (shown on badges), credentials, and optional category specialties (empty means all categories). The owner records when the contractor agreement is signed and can pause or end a partnership.
+- Work is only assigned to active partners with a signed agreement, inside their specialties.
+
+**Requests and assignment**
+- Eligible pieces are live, fixed-price, in an open category, and asking at least `HIGH_VALUE_THRESHOLD_CENTS` (default $500). Auctions aren't eligible.
+- Sellers see **Request partner authentication** (free during the beta) on eligible listings in their dashboard. The owner can also send any eligible listing directly from the "not yet authenticated" list.
+- Each listing has one open request at a time (enforced by the database). Assigning a request emails the seller, and the listing stays live meanwhile.
+
+**Results** (the owner records what the partner found; partners don't sign in)
+- **Authenticated:** a published result with a certificate number (like `UA-A-26J7D-V25E5`). The listing page shows "Authenticated by partner" with the partner's organization, the certificate, and the date. Browse and storefront cards show a badge.
+- **Not authenticated:** an internal rejected result, no badge, and the partner's notes are emailed to the seller.
+- **Inconclusive:** the request is returned with no result, and the seller can ask again later.
+- The owner can **revoke** a badge with a reason, which is emailed to the seller.
+- Closed listings record `wasAuthenticated` in `ListingOutcome`, so the "what sells" report compares authenticated and unauthenticated sales.
+
+**Guards in the database:**
+- A result names exactly one grader, a partner or an in-house grader.
+- After the draft stage, only a result's status can change, and only forward. Results can't be deleted.
+- An in-house grade can't be published without a partner AGREE or ADJUST verification. That rule is ready for Stage 2.
+- GRADED needs a rubric, and MUSEUM_GRADE can't be issued.
+- Partner verifications are append-only.
+
+**Audit events:** `grading.authenticator_added`, `grading.authenticator_updated`, `grading.authentication_requested`, `grading.authentication_assigned`, `grading.authentication_recorded`, `grading.authentication_revoked`.
+
+**Needs Andrew's decision or action**
+1. **Partners:** pick the 1–2 authenticators, sign contractor agreements (L9: liability for wrong calls, insurance), and agree how they're paid. Payment is off-platform during the beta. Sellers pay nothing.
+2. **Threshold:** confirm `HIGH_VALUE_THRESHOLD_CENTS` ($500 is a placeholder).
+3. **Badge wording:** "Authenticated by partner" and the seller emails should be reviewed by counsel along with the other templates.
+4. **Not-authenticated pieces:** decide whether a failed authentication should also send the listing back to compliance review. Today the owner decides case by case from the user page.

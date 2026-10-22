@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { feeRates } from "@/config/economics";
-import type { AuctionStatus, ListingStatus } from "@/generated/prisma/enums";
+import type { AuctionStatus, GradingSubmissionStatus, ListingStatus } from "@/generated/prisma/enums";
 import { checkIdentityGate } from "@/domains/identity/verification/verification";
 import { formatUsd, priceBreakdown } from "@/domains/pricing/pricing";
 import { requireUser } from "@/lib/auth/dal";
@@ -12,6 +12,8 @@ import {
   startPayoutOnboardingAction,
 } from "@/app/actions/orders";
 import { changePriceAction, withdrawListingAction } from "@/app/actions/listings";
+import { requestAuthenticationAction } from "@/app/actions/grading";
+import { authenticationEligibility } from "@/domains/grading/authentication";
 import { sellerAuctionDecisionAction } from "@/app/actions/auctions";
 import { ActionForm, inputClass } from "@/components/action-form";
 import { UncertaintyBadge } from "@/components/uncertainty-badge";
@@ -91,6 +93,12 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
       complianceReviews: { orderBy: { createdAt: "desc" }, take: 1 },
       aiAnalyses: { orderBy: { createdAt: "desc" }, take: 1, select: { uncertainty: true, blocksPublishing: true } },
       auctions: { orderBy: { createdAt: "desc" }, take: 1 },
+      category: { select: { vertical: true } },
+      gradingSubmissions: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { status: true, results: { where: { status: "PUBLISHED" }, select: { certificateNumber: true }, take: 1 } },
+      },
     },
   });
   const rates = feeRates();
@@ -268,6 +276,7 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
                           )}
                         </div>
                       )}
+                      <AuthenticationStatus listing={l} />
                       {l.status === "REJECTED" && review?.notes && (
                         <span className="mt-1 block text-xs text-red-700">{review.notes}</span>
                       )}
@@ -314,6 +323,43 @@ async function SellDashboard({ searchParams }: { searchParams: PageProps<"/sell"
           </table>
         )}
       </section>
+    </>
+  );
+}
+
+const OPEN_SUBMISSION: readonly GradingSubmissionStatus[] = ["SUBMITTED", "RECEIVED", "IN_REVIEW"];
+
+const submissionLabel: Record<GradingSubmissionStatus, string> = {
+  SUBMITTED: "requested",
+  RECEIVED: "item received",
+  IN_REVIEW: "with a partner",
+  COMPLETED: "authenticated",
+  REJECTED: "not authenticated",
+  RETURNED: "inconclusive",
+};
+
+type SellerListing = Parameters<typeof authenticationEligibility>[0] & {
+  id: string;
+  gradingSubmissions: { status: GradingSubmissionStatus; results: { certificateNumber: string }[] }[];
+};
+
+/** Partner authentication state for one listing, or the request form when it's eligible. */
+function AuthenticationStatus({ listing }: { listing: SellerListing }) {
+  const submission = listing.gradingSubmissions[0];
+  const cert = submission?.results[0]?.certificateNumber;
+  if (cert) return <span className="mt-1 block text-xs text-emerald-800">Authenticated by partner · {cert}</span>;
+  if (submission && OPEN_SUBMISSION.includes(submission.status)) {
+    return <span className="mt-1 block text-xs text-stone-600">Authentication {submissionLabel[submission.status]}</span>;
+  }
+  if (authenticationEligibility(listing)) return null;
+  return (
+    <>
+      {submission && <span className="mt-1 block text-xs text-stone-600">Last authentication: {submissionLabel[submission.status]}</span>}
+      <ActionForm action={requestAuthenticationAction} submitLabel="Request partner authentication" variant="secondary" className="mt-2 space-y-1">
+        <input type="hidden" name="listingId" value={listing.id} />
+        <input name="notes" placeholder="Anything the partner should know (optional)" className={inputClass} />
+        <span className="block text-xs text-stone-500">Free during the beta. A partner reviews your photos and description.</span>
+      </ActionForm>
     </>
   );
 }

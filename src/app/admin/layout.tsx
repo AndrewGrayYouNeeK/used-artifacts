@@ -9,6 +9,7 @@ const NAV = [
   { href: "/admin/orders", label: "Orders", ownerOnly: false },
   { href: "/admin/compliance", label: "Compliance", ownerOnly: false },
   { href: "/admin/trust", label: "Trust & safety", ownerOnly: false },
+  { href: "/admin/grading", label: "Grading", ownerOnly: false },
   { href: "/admin/feedback", label: "Feedback", ownerOnly: false },
   { href: "/admin/beta", label: "Beta controls", ownerOnly: false },
   { href: "/admin/audit", label: "Audit log", ownerOnly: true },

@@ -42,6 +42,7 @@ export async function browseListings(db: Db, query: BrowseQuery, config: Platfor
         photos: { orderBy: { sortOrder: "asc" }, take: 1 },
         storefront: { select: { name: true } },
         auctions: { where: { status: "LIVE" }, take: 1, select: { currentPriceCents: true, startingBidCents: true } },
+        gradingSubmissions: { where: { results: { some: { status: "PUBLISHED", tierAwarded: "AUTHENTICATED" } } }, select: { id: true }, take: 1 },
       },
     }),
     db.listing.count({ where }),
