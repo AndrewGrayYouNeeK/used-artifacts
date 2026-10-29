@@ -1,0 +1,11 @@
+{
+  "name": "Used Artifacts test preview",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  "postCreateCommand": "bash scripts/preview-setup.sh",
+  "postAttachCommand": "bash scripts/preview-start.sh",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "Used Artifacts", "onAutoForward": "openBrowser" }
+  }
+}

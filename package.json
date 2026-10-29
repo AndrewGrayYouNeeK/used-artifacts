@@ -17,7 +17,10 @@
     "db:generate": "prisma generate",
     "proprietor:assign": "tsx scripts/assign-proprietor.ts",
     "two-factor:reset": "tsx scripts/reset-two-factor.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "preview:setup": "bash scripts/preview-setup.sh",
+    "preview:start": "bash scripts/preview-start.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1156.0",
