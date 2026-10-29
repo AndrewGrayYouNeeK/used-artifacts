@@ -58,6 +58,15 @@ The owner and moderators must sign in with an authenticator app to open `/admin`
 RESET_EMAIL=person@example.com RESET_REASON="Confirmed by phone call on 2026-11-02" npm run two-factor:reset
 ```
 
+## Test preview (throwaway, simulators only)
+
+For trying the app on a phone or another computer before real hosting exists. It uses a local database, the simulated checkout, ID check, and photo analyzer, console email, and staff two-factor turned off. It never touches Stripe.
+
+- **GitHub Codespaces (free tier, just a GitHub login):** on the repo page choose Code → Codespaces → Create codespace on this branch. Setup (`npm run preview:setup`) runs once, then `npm run preview:start` starts the app and opens the forwarded port 3000. The URL stays private to your GitHub account. Stop the codespace when done; it keeps its data until deleted.
+- **Any Linux machine with Node 22:** `npm run preview:setup` once, then `npm run preview:start -- --tunnel` for a public `https://*.trycloudflare.com` URL (free, no account; the URL changes on every start and lives only while the command runs).
+
+`npm run demo:seed` (included in setup) adds demo accounts, a storefront, listings, an authenticated piece, a listing waiting in the compliance queue, and two orders. Every demo account's password is in `scripts/demo-seed.ts`; it refuses to run against anything but a localhost database.
+
 ## Checks
 
 ```bash
