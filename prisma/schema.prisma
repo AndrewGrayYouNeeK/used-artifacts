@@ -1,0 +1,1522 @@
+// Used Artifacts data model. See docs/BUILD_PLAN.md section 4.
+// Money is always integer cents; rates are basis points (100 bps = 1%).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Identity & tenancy ─────────────────────────────
+
+enum UserRole {
+  USER
+  MODERATOR
+  OWNER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id              String     @id @default(cuid())
+  /// Always stored lowercased and trimmed.
+  email           String     @unique
+  emailVerifiedAt DateTime?
+  passwordHash    String
+  displayName     String
+  role            UserRole   @default(USER)
+  status          UserStatus @default(ACTIVE)
+  /// Share code for the referral program; created the first time the user opens their referrals page.
+  referralCode    String?    @unique
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  sessions                Session[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  identityVerification    IdentityVerification?
+  loginEvents             LoginEvent[]
+  proprietor              Proprietor?
+
+  ownedStorefronts      Storefront[]            @relation("StorefrontOwner")
+  storefrontMemberships StorefrontMember[]
+  listings              Listing[]               @relation("ListingSeller")
+  provenanceStatements  ProvenanceStatement[]
+  complianceReviews     ComplianceReview[]      @relation("ComplianceReviewer")
+  bids                  Bid[]
+  auctionsWon           Auction[]               @relation("AuctionWinner")
+  nonPayingStrikes      NonPayingBidderStrike[]
+  purchases             Order[]                 @relation("OrderBuyer")
+  sales                 Order[]                 @relation("OrderSeller")
+  disputesOpened        Dispute[]               @relation("DisputeOpener")
+  linksA                AccountLink[]           @relation("AccountLinkA")
+  linksB                AccountLink[]           @relation("AccountLinkB")
+  enforcementActions    EnforcementAction[]     @relation("EnforcementSubject")
+  appeals               Appeal[]                @relation("AppealAuthor")
+  appealsDecided        Appeal[]                @relation("AppealDecider")
+  enforcementsTaken     EnforcementAction[]     @relation("EnforcementActor")
+  enforcementsLifted    EnforcementAction[]     @relation("EnforcementLifter")
+  fraudSignalsReviewed  FraudSignal[]           @relation("FraudSignalReviewer")
+  referralsMade         Referral[]              @relation("Referrer")
+  referredBy            Referral?               @relation("Referee")
+  referralPayouts       ReferralPayout[]
+  badges                UserBadge[]
+  gradingSubmissions    GradingSubmission[]
+  gradingResultsGraded  GradingResult[]         @relation("InHouseGrader")
+  gradingResultsEntered GradingResult[]         @relation("GradingRecorder")
+  auditEvents           AuditEvent[]
+  aiAnalyses            AiAnalysis[]
+  twoFactor             TwoFactorCredential?
+  recoveryCodes         TwoFactorRecoveryCode[]
+  loginChallenges       LoginChallenge[]
+  betaInvitesCreated    BetaInvite[]            @relation("BetaInviteCreator")
+  betaInviteRedemption  BetaInviteRedemption?
+  killSwitchesUpdated   KillSwitch[]
+  feedback              Feedback[]              @relation("FeedbackAuthor")
+  feedbackHandled       Feedback[]              @relation("FeedbackHandler")
+  dailyReviews          DailyReview[]
+}
+
+/// Opaque session token lives in an httpOnly cookie; only its SHA-256 hash is stored.
+model Session {
+  id                  String    @id @default(cuid())
+  userId              String
+  tokenHash           String    @unique
+  expiresAt           DateTime
+  createdAt           DateTime  @default(now())
+  lastSeenAt          DateTime  @default(now())
+  ipHash              String?
+  userAgent           String?
+  /// Set when the session was opened (or upgraded) with a second factor.
+  twoFactorVerifiedAt DateTime?
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id                String    @id @default(cuid())
+  userId            String
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  usedAt            DateTime?
+  requestedIp       String?
+  /// Set when the owner triggered the email from the GM dashboard (still delivered only to the user).
+  requestedByUserId String?
+  createdAt         DateTime  @default(now())
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum IdentityVerificationStatus {
+  PENDING
+  PROCESSING
+  REQUIRES_INPUT
+  VERIFIED
+  CANCELED
+  /// Same name + date of birth as another account with a different document; staff decide.
+  NEEDS_REVIEW
+  /// The document is already bound to another account (one identity per account).
+  DUPLICATE_REJECTED
+  /// Staff rejected a NEEDS_REVIEW verification.
+  REJECTED
+}
+
+model IdentityVerification {
+  id                      String                     @id @default(cuid())
+  userId                  String                     @unique
+  provider                String
+  providerSessionId       String                     @unique
+  status                  IdentityVerificationStatus @default(PENDING)
+  verifiedAt              DateTime?
+  legalName               String?
+  dobYear                 Int?
+  documentType            String?
+  issuingCountry          String?
+  /// Provider sessions started; capped because each check is billed.
+  attemptCount            Int                        @default(0)
+  /// Provider error code when the user must retry (e.g. selfie_face_mismatch).
+  lastErrorCode           String?
+  /// Keyed HMAC of document number + country + DOB. Unique => one identity per account.
+  /// Kept after staff rejection so the same document can't be reused on another account.
+  documentFingerprintHash String?                    @unique
+  /// Keyed HMAC of normalized legal name + full DOB. Not unique: a collision is a review signal.
+  personFingerprintHash   String?
+  /// The other account involved when status is NEEDS_REVIEW or DUPLICATE_REJECTED.
+  conflictingUserId       String?
+  reviewedById            String?
+  reviewedAt              DateTime?
+  reviewNotes             String?
+  consentedAt             DateTime?
+  consentNoticeVersion    Int?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  user                    User                       @relation(fields: [userId], references: [id])
+
+  @@index([personFingerprintHash])
+  @@index([status])
+}
+
+/// Inbound webhook deliveries, keyed by the provider's event id, so retries are processed once.
+model WebhookEvent {
+  id          String    @id
+  provider    String
+  type        String
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+}
+
+model LoginEvent {
+  id           String   @id @default(cuid())
+  userId       String
+  succeeded    Boolean
+  ipHash       String?
+  uaHash       String?
+  deviceIdHash String?
+  at           DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, at])
+  @@index([deviceIdHash])
+  @@index([ipHash])
+}
+
+/// Singleton holder of the Proprietor badge. CHECK (id = 1) plus triggers in the
+/// migration make it impossible to hold more than one row, to re-point it, or to
+/// delete it. See BUILD_PLAN.md section 4.6a.
+model Proprietor {
+  id         Int      @id @default(1)
+  userId     String   @unique
+  assignedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+enum StorefrontStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum StorefrontMemberRole {
+  OWNER
+  STAFF
+}
+
+model Storefront {
+  id              String             @id @default(cuid())
+  slug            String             @unique
+  name            String
+  ownerUserId     String
+  stripeAccountId String?            @unique
+  payoutsEnabled  Boolean            @default(false)
+  status          StorefrontStatus   @default(ACTIVE)
+  policies        Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  owner           User               @relation("StorefrontOwner", fields: [ownerUserId], references: [id])
+  members         StorefrontMember[]
+  listings        Listing[]
+  orders          Order[]
+}
+
+model StorefrontMember {
+  storefrontId String
+  userId       String
+  role         StorefrontMemberRole
+  createdAt    DateTime             @default(now())
+  storefront   Storefront           @relation(fields: [storefrontId], references: [id], onDelete: Cascade)
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([storefrontId, userId])
+}
+
+// ───────────────────────────── Catalog & compliance ─────────────────────────────
+
+enum Vertical {
+  ARTIFACT
+  ANTIQUE
+}
+
+model Category {
+  id                     String               @id @default(cuid())
+  parentId               String?
+  name                   String
+  slug                   String               @unique
+  /// Visibility is controlled by the ENABLED_VERTICALS config value.
+  vertical               Vertical
+  isNativeAmerican       Boolean              @default(false)
+  requiresEnhancedReview Boolean              @default(false)
+  sortOrder              Int                  @default(0)
+  parent                 Category?            @relation("CategoryTree", fields: [parentId], references: [id])
+  children               Category[]           @relation("CategoryTree")
+  listings               Listing[]
+  rubrics                GradingRubric[]
+  feeSchedules           GradingFeeSchedule[]
+  gradingSubmissions     GradingSubmission[]
+  listingOutcomes        ListingOutcome[]
+
+  @@index([vertical])
+}
+
+enum ListingFormat {
+  FIXED
+  AUCTION
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  REJECTED
+  LIVE
+  SOLD
+  ENDED
+  REMOVED
+}
+
+model Listing {
+  id                   String        @id @default(cuid())
+  storefrontId         String
+  sellerUserId         String
+  categoryId           String
+  title                String
+  description          String
+  /// Seller's self-reported condition; compared later against partner grades.
+  sellerConditionGrade String?
+  /// Required for Native American categories (see listing rules).
+  regionOfOrigin       String?
+  estimatedAge         String?
+  materials            String?
+  format               ListingFormat
+  /// What the seller asks. Buyers see askingPriceCents + buyer fee (owner decision B3).
+  askingPriceCents     Int?
+  /// Flat US shipping the seller charges; shown as its own checkout line (0 = free shipping).
+  shippingCents        Int           @default(0)
+  status               ListingStatus @default(DRAFT)
+  publishedAt          DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  storefront           Storefront            @relation(fields: [storefrontId], references: [id])
+  seller               User                  @relation("ListingSeller", fields: [sellerUserId], references: [id])
+  category             Category              @relation(fields: [categoryId], references: [id])
+  photos               ListingPhoto[]
+  provenanceStatements ProvenanceStatement[]
+  complianceReviews    ComplianceReview[]
+  auctions             Auction[]
+  orders               Order[]
+  fingerprint          ItemFingerprint?
+  aiAnalyses           AiAnalysis[]
+  gradingSubmissions   GradingSubmission[]
+  dailyStats           ListingDailyStat[]
+  priceChanges         ListingPriceChange[]
+  outcome              ListingOutcome?
+  enforcementActions   EnforcementAction[]
+
+  @@index([storefrontId, status])
+  @@index([categoryId, status])
+}
+
+model ListingPhoto {
+  id         String   @id @default(cuid())
+  listingId  String
+  storageKey String
+  pHash      String?
+  width      Int?
+  height     Int?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([pHash])
+}
+
+enum AcquisitionSource {
+  PRIVATE_LAND_WITH_PERMISSION
+  INHERITED
+  PURCHASED
+  OTHER
+}
+
+model ProvenanceStatementTemplate {
+  id           String                @id @default(cuid())
+  version      Int                   @unique
+  /// Shown verbatim above the attestations. Must stay marked as a draft until counsel approves.
+  body         String
+  /// [{ key, text }]: every one must be accepted to sign.
+  attestations Json
+  /// True until counsel signs off (BUILD_PLAN L2, L3, L5, L6).
+  isDraft      Boolean               @default(true)
+  approvedBy   String?
+  effectiveAt  DateTime
+  createdAt    DateTime              @default(now())
+  statements   ProvenanceStatement[]
+}
+
+/// Immutable once signed; edits create a new row.
+model ProvenanceStatement {
+  id                                           String                      @id @default(cuid())
+  listingId                                    String
+  sellerUserId                                 String
+  templateId                                   String
+  acquisitionSource                            AcquisitionSource
+  acquisitionState                             String?
+  acquisitionYearApprox                        Int?
+  /// Free-text account of how and where the seller got the item.
+  acquisitionDetails                           String
+  /// Required when acquisitionSource is PRIVATE_LAND_WITH_PERMISSION.
+  landownerName                                String?
+  landownerPermissionDocKey                    String?
+  priorOwnerChain                              Json?
+  attestsNotFederalStateOrTribalLand           Boolean
+  attestsNotHumanRemainsFuneralSacredPatrimony Boolean
+  attestsNotIndianMadeMisrepresented           Boolean
+  /// Every attestation key from the template that the seller accepted.
+  attestationKeys                              String[]
+  /// Native American categories: seller acknowledged the Indian Arts and Crafts Act disclosure.
+  iacaDisclosureAcknowledged                   Boolean                     @default(false)
+  /// The listing content the statement covers, frozen at signing.
+  listingSnapshot                              Json
+  signedName                                   String
+  signedAt                                     DateTime                    @default(now())
+  ip                                           String?
+  userAgent                                    String?
+  signatureHash                                String
+  listing                                      Listing                     @relation(fields: [listingId], references: [id])
+  seller                                       User                        @relation(fields: [sellerUserId], references: [id])
+  template                                     ProvenanceStatementTemplate @relation(fields: [templateId], references: [id])
+
+  @@index([listingId])
+}
+
+enum ComplianceReviewReason {
+  /// Beta policy: every listing is reviewed before it goes live.
+  BETA_FULL_REVIEW
+  AI_FLAG
+  CATEGORY
+  KEYWORD
+  REPORT
+  RANDOM_AUDIT
+}
+
+enum ComplianceReviewStatus {
+  OPEN
+  APPROVED
+  REJECTED
+  ESCALATED
+}
+
+model ComplianceReview {
+  id         String                 @id @default(cuid())
+  listingId  String
+  reason     ComplianceReviewReason
+  /// Screening matches and rule flags captured at submission.
+  flags      Json?
+  status     ComplianceReviewStatus @default(OPEN)
+  reviewerId String?
+  decision   String?
+  notes      String?
+  createdAt  DateTime               @default(now())
+  decidedAt  DateTime?
+  listing    Listing                @relation(fields: [listingId], references: [id])
+  reviewer   User?                  @relation("ComplianceReviewer", fields: [reviewerId], references: [id])
+
+  @@index([status, createdAt])
+}
+
+enum ProhibitedTermSeverity {
+  /// Submission is refused outright (e.g. NAGPRA-banned objects).
+  BLOCK
+  /// Submission is allowed but flagged for the compliance reviewer.
+  REVIEW
+}
+
+model ProhibitedTerm {
+  id        String                 @id @default(cuid())
+  pattern   String                 @unique
+  isRegex   Boolean                @default(false)
+  severity  ProhibitedTermSeverity @default(BLOCK)
+  reason    String
+  createdAt DateTime               @default(now())
+}
+
+// ───────────────────────────── Auctions ─────────────────────────────
+
+enum AuctionStatus {
+  /// Waiting for compliance review.
+  SCHEDULED
+  LIVE
+  /// Closed with a winner who has an unpaid order (AUCTION or SECOND_CHANCE).
+  ENDED
+  /// The winner paid.
+  SETTLED
+  /// Closed with no bids, or the reserve was not met.
+  UNSOLD
+  /// The winner didn't pay in time; the seller picks a second-chance offer or a relist.
+  AWAITING_SELLER
+  /// Replaced by a new auction on the same listing.
+  RELISTED
+  CANCELLED
+}
+
+/// Every amount here is a buyer price (asking + buyer fee), the same terms bidders see.
+model Auction {
+  id                  String                  @id @default(cuid())
+  listingId           String
+  status              AuctionStatus           @default(SCHEDULED)
+  startingBidCents    Int
+  /// Hidden from bidders; they only see whether it is met.
+  reserveCents        Int?
+  isNoReserve         Boolean
+  durationDays        Int
+  softCloseMinutes    Int
+  paymentWindowHours  Int
+  /// Set when the listing is approved and the auction goes live.
+  startsAt            DateTime?
+  endsAt              DateTime?
+  originalEndsAt      DateTime?
+  currentPriceCents   Int?
+  currentHighBidId    String?                 @unique
+  bidCount            Int                     @default(0)
+  reserveMet          Boolean                 @default(false)
+  closedAt            DateTime?
+  winnerUserId        String?
+  /// The winner's (or second-chance bidder's) order.
+  orderId             String?                 @unique
+  sellerDecisionDueAt DateTime?
+  relistOfId          String?                 @unique
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  listing             Listing                 @relation(fields: [listingId], references: [id])
+  bids                Bid[]                   @relation("AuctionBids")
+  currentHighBid      Bid?                    @relation("AuctionHighBid", fields: [currentHighBidId], references: [id])
+  nonPayingStrikes    NonPayingBidderStrike[]
+  winner              User?                   @relation("AuctionWinner", fields: [winnerUserId], references: [id])
+  order               Order?                  @relation(fields: [orderId], references: [id])
+  relistOf            Auction?                @relation("AuctionRelist", fields: [relistOfId], references: [id])
+  relistedAs          Auction?                @relation("AuctionRelist")
+
+  @@index([listingId])
+  @@index([status, endsAt])
+}
+
+enum BidStatus {
+  ACTIVE
+  OUTBID
+  RETRACTED
+  WINNING
+  VOIDED_SHILL
+}
+
+model Bid {
+  id               String         @id @default(cuid())
+  auctionId        String
+  bidderUserId     String
+  /// The auction's visible price right after this bid was placed.
+  amountCents      Int
+  /// The most the bidder will pay; proxy bidding raises their bid up to this.
+  maxProxyCents    Int
+  priceBeforeCents Int
+  placedAt         DateTime       @default(now())
+  ipHash           String?
+  deviceIdHash     String?
+  status           BidStatus      @default(ACTIVE)
+  auction          Auction        @relation("AuctionBids", fields: [auctionId], references: [id])
+  bidder           User           @relation(fields: [bidderUserId], references: [id])
+  highBidOf        Auction?       @relation("AuctionHighBid")
+  retraction       BidRetraction?
+
+  @@index([auctionId, amountCents])
+  @@index([bidderUserId, placedAt])
+}
+
+enum RetractionReason {
+  /// Obviously mistyped: at least 10x the price before the bid.
+  TYPO
+  DESCRIPTION_CHANGED
+  SELLER_UNREACHABLE
+}
+
+enum RetractionStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+model BidRetraction {
+  id            String           @id @default(cuid())
+  bidId         String           @unique
+  kind          RetractionReason
+  /// The bidder's explanation.
+  reason        String
+  status        RetractionStatus @default(PENDING)
+  /// Null when approved automatically (self-serve typo).
+  approvedById  String?
+  decisionNotes String?
+  decidedAt     DateTime?
+  createdAt     DateTime         @default(now())
+  bid           Bid              @relation(fields: [bidId], references: [id])
+
+  @@index([status, createdAt])
+}
+
+model NonPayingBidderStrike {
+  id        String   @id @default(cuid())
+  userId    String
+  auctionId String
+  orderId   String   @unique
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  auction   Auction  @relation(fields: [auctionId], references: [id])
+
+  @@index([userId, createdAt])
+}
+
+// ───────────────────────────── Orders, payments, ledger ─────────────────────────────
+
+enum OrderSource {
+  FIXED
+  AUCTION
+  SECOND_CHANCE
+}
+
+enum OrderStatus {
+  CREATED
+  PAID_HELD
+  SHIPPED
+  DELIVERED
+  RELEASED
+  AUTO_RELEASED
+  DISPUTED
+  RESOLVED_RELEASE
+  RESOLVED_REFUND
+  RESOLVED_PARTIAL
+  CANCELLED_REFUNDED
+  EXPIRED
+}
+
+model Order {
+  id                  String      @id @default(cuid())
+  listingId           String
+  buyerUserId         String
+  sellerUserId        String
+  storefrontId        String
+  source              OrderSource
+  /// Fee snapshot at purchase time; config changes never rewrite past orders.
+  askingPriceCents    Int
+  buyerFeeBps         Int
+  buyerFeeCents       Int
+  /// askingPriceCents + buyerFeeCents: the item price the buyer saw and paid, with no fee on top.
+  buyerPriceCents     Int
+  sellerFeeBps        Int
+  sellerFeeCents      Int
+  /// askingPriceCents - sellerFeeCents.
+  sellerPayoutCents   Int
+  /// buyerFeeCents + sellerFeeCents.
+  platformFeeCents    Int
+  shippingCents       Int         @default(0)
+  taxCents            Int         @default(0)
+  status              OrderStatus @default(CREATED)
+  /// Unpaid checkouts hold the listing until this time, then expire.
+  paymentDueAt        DateTime?
+  paidAt              DateTime?
+  shippedAt           DateTime?
+  deliveredAt         DateTime?
+  releaseEligibleAt   DateTime?
+  releasedAt          DateTime?
+  /// Set by fraud checks or staff: funds stay held (no auto-release) until staff clear it.
+  releaseHold         Boolean     @default(false)
+  releaseHoldReason   String?
+  /// US-only shipping address collected at checkout (owner decision B7).
+  shippingAddress     Json?
+  /// Keyed HMAC of the normalized address, for account-linkage signals.
+  shippingAddressHash String?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  listing          Listing           @relation(fields: [listingId], references: [id])
+  buyer            User              @relation("OrderBuyer", fields: [buyerUserId], references: [id])
+  seller           User              @relation("OrderSeller", fields: [sellerUserId], references: [id])
+  storefront       Storefront        @relation(fields: [storefrontId], references: [id])
+  shipment         Shipment?
+  payments         Payment[]
+  transfers        Transfer[]
+  refunds          Refund[]
+  disputes         Dispute[]
+  ledgerEntries    LedgerEntry[]
+  referralEarnings ReferralEarning[]
+  fraudSignalLinks FraudSignalOrder[]
+  firstSaleOf      Referral?         @relation("ReferralFirstSale")
+  auction          Auction?
+
+  @@index([buyerUserId])
+  @@index([sellerUserId])
+  @@index([status])
+  @@index([shippingAddressHash])
+}
+
+enum ShipmentStatus {
+  LABEL_CREATED
+  IN_TRANSIT
+  DELIVERED
+  EXCEPTION
+  RETURNED
+}
+
+model Shipment {
+  id             String         @id @default(cuid())
+  orderId        String         @unique
+  carrier        String
+  trackingNumber String
+  status         ShipmentStatus @default(LABEL_CREATED)
+  /// Tracking provider's id (e.g. EasyPost tracker), when one is configured.
+  trackerId      String?
+  shippedAt      DateTime       @default(now())
+  deliveredAt    DateTime?
+  /// CARRIER (tracking webhook), STAFF (manual confirmation) or BUYER.
+  deliverySource String?
+  order          Order          @relation(fields: [orderId], references: [id])
+
+  @@index([trackingNumber])
+}
+
+enum PaymentStatus {
+  REQUIRES_PAYMENT
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id                     String        @id @default(cuid())
+  orderId                String
+  /// "stripe" or "fake" (dev and tests only).
+  provider               String
+  /// Hosted checkout session; the payment intent only exists once the buyer pays.
+  checkoutSessionId      String        @unique
+  stripePaymentIntentId  String?       @unique
+  stripeChargeId         String?       @unique
+  amountCents            Int
+  status                 PaymentStatus
+  /// Keyed HMAC of the card fingerprint, for account-linkage signals.
+  paymentFingerprintHash String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  order                  Order         @relation(fields: [orderId], references: [id])
+
+  @@index([paymentFingerprintHash])
+}
+
+enum TransferStatus {
+  PENDING
+  PAID
+  REVERSED
+}
+
+model Transfer {
+  id                   String         @id @default(cuid())
+  orderId              String
+  /// Sent to the provider so a retried transfer can never pay twice.
+  idempotencyKey       String         @unique
+  destinationAccountId String
+  stripeTransferId     String?        @unique
+  amountCents          Int
+  status               TransferStatus @default(PENDING)
+  attempts             Int            @default(0)
+  lastError            String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  order                Order          @relation(fields: [orderId], references: [id])
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+model Refund {
+  id             String       @id @default(cuid())
+  orderId        String
+  idempotencyKey String       @unique
+  stripeRefundId String?      @unique
+  amountCents    Int
+  reason         String
+  status         RefundStatus @default(PENDING)
+  attempts       Int          @default(0)
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  order          Order        @relation(fields: [orderId], references: [id])
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+}
+
+enum DisputeResolution {
+  RELEASE
+  REFUND
+  PARTIAL
+}
+
+model Dispute {
+  id              String             @id @default(cuid())
+  orderId         String
+  openedById      String
+  reason          String
+  status          DisputeStatus      @default(OPEN)
+  resolution      DisputeResolution?
+  evidenceKeys    String[]
+  /// Card chargeback reported by the payment provider rather than opened by the buyer.
+  isChargeback    Boolean            @default(false)
+  refundCents     Int?
+  resolvedById    String?
+  resolutionNotes String?
+  createdAt       DateTime           @default(now())
+  resolvedAt      DateTime?
+  order           Order              @relation(fields: [orderId], references: [id])
+  openedBy        User               @relation("DisputeOpener", fields: [openedById], references: [id])
+}
+
+enum LedgerAccountKind {
+  PLATFORM_REVENUE
+  SELLER_PAYABLE
+  REFERRAL_PAYABLE
+  BUYER_HELD
+  PROCESSOR_FEES
+  CASH
+  /// Marketplace-facilitator sales tax collected and owed to states.
+  TAX_PAYABLE
+}
+
+model LedgerAccount {
+  id      String            @id @default(cuid())
+  /// e.g. "platform_revenue", "seller_payable:<userId>", "buyer_held:<orderId>"
+  code    String            @unique
+  kind    LedgerAccountKind
+  debits  LedgerEntry[]     @relation("LedgerDebit")
+  credits LedgerEntry[]     @relation("LedgerCredit")
+}
+
+model LedgerEntry {
+  id                String           @id @default(cuid())
+  debitAccountId    String
+  creditAccountId   String
+  amountCents       Int
+  orderId           String?
+  referralEarningId String?
+  memo              String
+  createdAt         DateTime         @default(now())
+  debitAccount      LedgerAccount    @relation("LedgerDebit", fields: [debitAccountId], references: [id])
+  creditAccount     LedgerAccount    @relation("LedgerCredit", fields: [creditAccountId], references: [id])
+  order             Order?           @relation(fields: [orderId], references: [id])
+  referralEarning   ReferralEarning? @relation(fields: [referralEarningId], references: [id])
+
+  @@index([orderId])
+}
+
+// ───────────────────────────── Trust & safety ─────────────────────────────
+
+enum AccountLinkSignal {
+  SAME_DEVICE
+  SAME_IP
+  SAME_PAYMENT_FINGERPRINT
+  SAME_SHIPPING_ADDRESS
+  SAME_BANK
+  SAME_ID_HASH_ATTEMPT
+  SAME_PERSON_DETAILS
+}
+
+model AccountLink {
+  id          String            @id @default(cuid())
+  userAId     String
+  userBId     String
+  signal      AccountLinkSignal
+  strength    Int
+  firstSeenAt DateTime          @default(now())
+  userA       User              @relation("AccountLinkA", fields: [userAId], references: [id])
+  userB       User              @relation("AccountLinkB", fields: [userBId], references: [id])
+
+  @@unique([userAId, userBId, signal])
+}
+
+enum FraudDetector {
+  DUPLICATE_IDENTITY
+  SELF_BUY
+  SHILL
+  CIRCLE_TRADE
+  SELF_RESALE
+  RETRACTION_ABUSE
+  NONPAY
+  /// A referrer earning on sales to themselves or a linked account, or recruiting their own second account.
+  REFERRAL_ABUSE
+}
+
+enum FraudSignalStatus {
+  OPEN
+  CONFIRMED
+  DISMISSED
+}
+
+model FraudSignal {
+  id           String              @id @default(cuid())
+  subjectType  String
+  subjectId    String
+  detector     FraudDetector
+  score        Int
+  evidence     Json
+  status       FraudSignalStatus   @default(OPEN)
+  createdAt    DateTime            @default(now())
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNotes  String?
+  /// Detector-chosen key so a nightly job raises each finding once (e.g. a cycle's sorted order ids).
+  dedupeKey    String?             @unique
+  reviewedBy   User?               @relation("FraudSignalReviewer", fields: [reviewedById], references: [id])
+  actions      EnforcementAction[]
+  orders       FraudSignalOrder[]
+
+  @@index([status, createdAt])
+}
+
+/// Every order a signal implicates (a circle trade spans several). Badge counts skip
+/// orders with an open or confirmed signal, whether it's the subject or listed here.
+model FraudSignalOrder {
+  signalId String
+  orderId  String
+  signal   FraudSignal @relation(fields: [signalId], references: [id])
+  order    Order       @relation(fields: [orderId], references: [id])
+
+  @@id([signalId, orderId])
+  @@index([orderId])
+}
+
+enum EnforcementType {
+  WARNING
+  BID_VOID
+  LISTING_REMOVED
+  FEE_FORFEIT
+  BADGE_REVOKED
+  SUSPENSION
+  BAN
+}
+
+model EnforcementAction {
+  id            String          @id @default(cuid())
+  userId        String
+  type          EnforcementType
+  reason        String
+  fraudSignalId String?
+  /// LISTING_REMOVED: the listing taken down.
+  listingId     String?
+  /// BADGE_REVOKED: the badge award revoked.
+  userBadgeId   String?
+  actorId       String
+  /// Suspensions end automatically at this time (escrow cron).
+  expiresAt     DateTime?
+  /// Set when the action ends: expiry, or staff overturning it on appeal.
+  liftedAt      DateTime?
+  liftedById    String?
+  liftReason    String?
+  createdAt     DateTime        @default(now())
+  user          User            @relation("EnforcementSubject", fields: [userId], references: [id])
+  actor         User            @relation("EnforcementActor", fields: [actorId], references: [id])
+  liftedBy      User?           @relation("EnforcementLifter", fields: [liftedById], references: [id])
+  fraudSignal   FraudSignal?    @relation(fields: [fraudSignalId], references: [id])
+  listing       Listing?        @relation(fields: [listingId], references: [id])
+  userBadge     UserBadge?      @relation(fields: [userBadgeId], references: [id])
+  appeal        Appeal?
+
+  @@index([userId, createdAt])
+  @@index([type, liftedAt, expiresAt])
+}
+
+model ItemFingerprint {
+  id        String   @id @default(cuid())
+  listingId String   @unique
+  pHashes   String[]
+  textHash  String
+  createdAt DateTime @default(now())
+  listing   Listing  @relation(fields: [listingId], references: [id])
+
+  @@index([textHash])
+}
+
+// ───────────────────────────── Growth: referrals, badges ─────────────────────────────
+// Membership is free for everyone; there is no paid tier (owner decision B3).
+
+model Referral {
+  id               String            @id @default(cuid())
+  referrerUserId   String
+  refereeUserId    String            @unique
+  code             String
+  firstSaleOrderId String?           @unique
+  createdAt        DateTime          @default(now())
+  referrer         User              @relation("Referrer", fields: [referrerUserId], references: [id])
+  referee          User              @relation("Referee", fields: [refereeUserId], references: [id])
+  firstSaleOrder   Order?            @relation("ReferralFirstSale", fields: [firstSaleOrderId], references: [id])
+  earnings         ReferralEarning[]
+}
+
+enum ReferralBasis {
+  BUYER_PRICE
+  ASKING_PRICE
+}
+
+enum ReferralEarningStatus {
+  /// Accrued on release; waits out the chargeback window (payableAt).
+  PENDING
+  /// Held by fraud checks until staff release or forfeit it.
+  FROZEN
+  PAYABLE
+  PAID
+  CLAWED_BACK
+}
+
+model ReferralEarning {
+  id               String                @id @default(cuid())
+  referralId       String
+  orderId          String
+  rateBps          Int
+  /// BUYER_PRICE or ASKING_PRICE, snapshotted from config (owner decision B2).
+  basis            ReferralBasis
+  basisCents       Int
+  platformFeeCents Int
+  cappedAtFee      Boolean
+  amountCents      Int
+  status           ReferralEarningStatus @default(PENDING)
+  /// End of the chargeback window; PENDING becomes PAYABLE after this.
+  payableAt        DateTime
+  frozenReason     String?
+  clawbackReason   String?
+  payoutId         String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  referral         Referral              @relation(fields: [referralId], references: [id])
+  order            Order                 @relation(fields: [orderId], references: [id])
+  payout           ReferralPayout?       @relation(fields: [payoutId], references: [id])
+  ledgerEntries    LedgerEntry[]
+
+  @@unique([referralId, orderId])
+  @@index([status, payableAt])
+}
+
+/// One transfer of a referrer's payable earnings to their payout account (from the platform balance).
+model ReferralPayout {
+  id                   String            @id @default(cuid())
+  referrerUserId       String
+  amountCents          Int
+  idempotencyKey       String            @unique
+  destinationAccountId String
+  stripeTransferId     String?           @unique
+  /// PENDING until the provider confirms; REVERSED if cancelled before sending.
+  status               TransferStatus    @default(PENDING)
+  attempts             Int               @default(0)
+  lastError            String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  referrer             User              @relation(fields: [referrerUserId], references: [id])
+  earnings             ReferralEarning[]
+
+  @@index([status])
+}
+
+enum BadgeKind {
+  VOLUME
+  COSMETIC
+}
+
+/// Proprietor is intentionally NOT a Badge row; see model Proprietor.
+model Badge {
+  id          String      @id @default(cuid())
+  code        String      @unique
+  name        String
+  kind        BadgeKind
+  description String
+  criteria    Json?
+  userBadges  UserBadge[]
+}
+
+model UserBadge {
+  id                 String              @id @default(cuid())
+  userId             String
+  badgeId            String
+  awardedAt          DateTime            @default(now())
+  revokedAt          DateTime?
+  basisSnapshot      Json?
+  user               User                @relation(fields: [userId], references: [id])
+  badge              Badge               @relation(fields: [badgeId], references: [id])
+  enforcementActions EnforcementAction[]
+
+  @@unique([userId, badgeId])
+}
+
+// ───────────────────────────── AI ─────────────────────────────
+
+enum AiUncertainty {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model AiAnalysis {
+  id                String        @id @default(cuid())
+  /// Null for a pre-submission suggestion run; set when the listing is submitted.
+  listingId         String?
+  requestedByUserId String?
+  /// Category the seller had selected when the analysis ran (drives the Native American guardrail).
+  categoryId        String?
+  photoIds          String[]
+  /// Difference hashes of the analyzed photos, so a suggestion run is only reused for the same photos.
+  photoHashes       String[]
+  provider          String
+  model             String
+  promptVersion     String
+  rawOutput         Json
+  normalizedOutput  Json
+  uncertainty       AiUncertainty
+  flags             String[]
+  guardrailActions  String[]
+  /// A red flag (possible human remains, funerary, sacred, patrimony, protected wildlife) that holds the listing for compliance.
+  blocksPublishing  Boolean       @default(false)
+  /// Provider failure or invalid output; the listing is still reviewed by staff.
+  error             String?
+  /// Which suggestions the seller accepted into the listing and which they rejected.
+  sellerDecisions   Json?
+  createdAt         DateTime      @default(now())
+  listing           Listing?      @relation(fields: [listingId], references: [id])
+  requestedBy       User?         @relation(fields: [requestedByUserId], references: [id])
+
+  @@index([requestedByUserId, createdAt])
+  @@index([listingId])
+}
+
+// ───────────────────────────── Grading arm ─────────────────────────────
+
+enum GradingTier {
+  AUTHENTICATED
+  GRADED
+  MUSEUM_GRADE
+}
+
+enum AuthenticatorStatus {
+  ACTIVE
+  PAUSED
+  TERMINATED
+}
+
+model Authenticator {
+  id                   String              @id @default(cuid())
+  name                 String
+  organization         String?
+  credentials          String
+  specialtyCategoryIds String[]
+  status               AuthenticatorStatus @default(ACTIVE)
+  agreementSignedAt    DateTime?
+  payoutAccount        String?
+  createdAt            DateTime            @default(now())
+  submissions          GradingSubmission[]
+  results              GradingResult[]
+  verifications        GradeVerification[]
+}
+
+model GradingRubric {
+  id            String          @id @default(cuid())
+  categoryId    String
+  version       Int
+  /// [{ key, label, weight, scale }]
+  criteria      Json
+  effectiveFrom DateTime
+  approvedBy    String?
+  category      Category        @relation(fields: [categoryId], references: [id])
+  results       GradingResult[]
+
+  @@unique([categoryId, version])
+}
+
+model GradingFeeSchedule {
+  id                    String      @id @default(cuid())
+  tier                  GradingTier
+  categoryId            String?
+  feeCents              Int
+  authenticatorShareBps Int
+  category              Category?   @relation(fields: [categoryId], references: [id])
+}
+
+enum GradingSubmissionStatus {
+  SUBMITTED
+  RECEIVED
+  IN_REVIEW
+  COMPLETED
+  REJECTED
+  RETURNED
+}
+
+model GradingSubmission {
+  id                      String                  @id @default(cuid())
+  listingId               String?
+  ownerUserId             String
+  categoryId              String
+  requestedTier           GradingTier
+  feeCents                Int
+  paymentId               String?
+  status                  GradingSubmissionStatus @default(SUBMITTED)
+  assignedAuthenticatorId String?
+  /// What the seller or owner asked the partner to look at; partner findings go on the result.
+  notes                   String?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @default(now()) @updatedAt
+  listing                 Listing?                @relation(fields: [listingId], references: [id])
+  owner                   User                    @relation(fields: [ownerUserId], references: [id])
+  category                Category                @relation(fields: [categoryId], references: [id])
+  assignedAuthenticator   Authenticator?          @relation(fields: [assignedAuthenticatorId], references: [id])
+  results                 GradingResult[]
+
+  @@index([status, createdAt])
+}
+
+enum GradingResultStatus {
+  DRAFT
+  PENDING_VERIFICATION
+  VERIFIED
+  PUBLISHED
+  REJECTED
+  REVOKED
+}
+
+/// Stage 1: graded by a partner authenticator. Stage 2: graded in-house and must be
+/// verified (GradeVerification AGREE/ADJUST) before it can be PUBLISHED.
+model GradingResult {
+  id                      String              @id @default(cuid())
+  submissionId            String
+  rubricId                String?
+  tierAwarded             GradingTier
+  criterionScores         Json?
+  overallGrade            String?
+  notes                   String?
+  certificateNumber       String              @unique
+  photoKeys               String[]
+  gradedByAuthenticatorId String?
+  gradedByUserId          String?
+  status                  GradingResultStatus @default(DRAFT)
+  publishedAt             DateTime?
+  revokedAt               DateTime?
+  revokeReason            String?
+  /// Staff member who entered a partner's result (Stage 1 partners don't sign in).
+  recordedById            String?
+  createdAt               DateTime            @default(now())
+  submission              GradingSubmission   @relation(fields: [submissionId], references: [id])
+  recordedBy              User?               @relation("GradingRecorder", fields: [recordedById], references: [id])
+  rubric                  GradingRubric?      @relation(fields: [rubricId], references: [id])
+  gradedByAuthenticator   Authenticator?      @relation(fields: [gradedByAuthenticatorId], references: [id])
+  gradedByUser            User?               @relation("InHouseGrader", fields: [gradedByUserId], references: [id])
+  verifications           GradeVerification[]
+}
+
+enum GradeVerificationDecision {
+  AGREE
+  ADJUST
+  DISAGREE
+}
+
+model GradeVerification {
+  id              String                    @id @default(cuid())
+  gradingResultId String
+  authenticatorId String
+  decision        GradeVerificationDecision
+  adjustedScores  Json?
+  notes           String?
+  decidedAt       DateTime                  @default(now())
+  gradingResult   GradingResult             @relation(fields: [gradingResultId], references: [id])
+  authenticator   Authenticator             @relation(fields: [authenticatorId], references: [id])
+}
+
+// ───────────────────────────── Sales-outcome data (Grading Stage 1) ─────────────────────────────
+
+model ListingDailyStat {
+  listingId String
+  date      DateTime @db.Date
+  views     Int      @default(0)
+  saves     Int      @default(0)
+  offers    Int      @default(0)
+  bids      Int      @default(0)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@id([listingId, date])
+}
+
+model ListingPriceChange {
+  id                  String   @id @default(cuid())
+  listingId           String
+  oldAskingPriceCents Int
+  newAskingPriceCents Int
+  changedAt           DateTime @default(now())
+  listing             Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+}
+
+enum ListingOutcomeType {
+  SOLD
+  EXPIRED
+  WITHDRAWN
+  REMOVED
+  UNSOLD_AUCTION
+}
+
+/// Snapshot taken when a listing leaves LIVE, so later edits never rewrite history.
+model ListingOutcome {
+  id                   String             @id @default(cuid())
+  listingId            String             @unique
+  categoryId           String
+  vertical             Vertical
+  outcome              ListingOutcomeType
+  firstAskCents        Int?
+  finalAskCents        Int?
+  /// Buyer price actually paid (asking + buyer fee).
+  salePriceCents       Int?
+  daysLive             Int
+  totalViews           Int
+  totalSaves           Int
+  photoCount           Int
+  sellerConditionGrade String?
+  wasAuthenticated     Boolean
+  gradingTier          GradingTier?
+  aiValueLowCents      Int?
+  aiValueHighCents     Int?
+  aiUncertainty        AiUncertainty?
+  closedAt             DateTime
+  listing              Listing            @relation(fields: [listingId], references: [id])
+  category             Category           @relation(fields: [categoryId], references: [id])
+
+  @@index([categoryId, outcome])
+}
+
+// ───────────────────────────── Audit ─────────────────────────────
+
+enum AuditActorType {
+  USER
+  ADMIN
+  SYSTEM
+  WEBHOOK
+}
+
+/// Append-only: UPDATE/DELETE/TRUNCATE are blocked by triggers in the migration.
+/// hash = sha256(prevHash || canonical event payload).
+model AuditEvent {
+  seq         BigInt         @id @default(autoincrement())
+  id          String         @unique @default(cuid())
+  at          DateTime       @default(now())
+  actorUserId String?
+  actorType   AuditActorType
+  action      String
+  subjectType String
+  subjectId   String?
+  before      Json?
+  after       Json?
+  ipHash      String?
+  requestId   String?
+  prevHash    String
+  hash        String         @unique
+  actor       User?          @relation(fields: [actorUserId], references: [id])
+
+  @@index([subjectType, subjectId])
+  @@index([actorUserId])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: closed beta (invites, kill switches, two-factor, feedback, daily review)
+// ---------------------------------------------------------------------------
+
+/// TOTP (RFC 6238). The secret is AES-256-GCM encrypted with TWO_FACTOR_ENCRYPTION_KEY.
+model TwoFactorCredential {
+  userId          String    @id
+  secretEncrypted String
+  /// Null until the user confirms a first code.
+  enabledAt       DateTime?
+  /// Highest 30-second step accepted, so a code can't be replayed.
+  lastUsedStep    Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Single-use backup codes; only hashes are stored.
+model TwoFactorRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Password accepted, second factor still owed. Short-lived and attempt-limited.
+model LoginChallenge {
+  id           String    @id @default(cuid())
+  userId       String
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  attempts     Int       @default(0)
+  usedAt       DateTime?
+  ipHash       String?
+  userAgent    String?
+  deviceIdHash String?
+  createdAt    DateTime  @default(now())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Owner-issued signup codes. Only the hash is stored; the code is shown once.
+model BetaInvite {
+  id          String                 @id @default(cuid())
+  codeHash    String                 @unique
+  /// Last 4 characters, so staff can tell codes apart.
+  codeHint    String
+  /// Who it's for (internal).
+  note        String
+  /// When set, only this email can redeem it.
+  email       String?
+  maxUses     Int                    @default(1)
+  useCount    Int                    @default(0)
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdById String
+  createdAt   DateTime               @default(now())
+  createdBy   User                   @relation("BetaInviteCreator", fields: [createdById], references: [id])
+  redemptions BetaInviteRedemption[]
+}
+
+model BetaInviteRedemption {
+  id        String     @id @default(cuid())
+  inviteId  String
+  userId    String     @unique
+  createdAt DateTime   @default(now())
+  invite    BetaInvite @relation(fields: [inviteId], references: [id])
+  user      User       @relation(fields: [userId], references: [id])
+
+  @@index([inviteId])
+}
+
+enum KillSwitchKey {
+  SIGNUPS
+  LISTINGS
+  CHECKOUT
+  BIDDING
+  PAYOUTS
+  AI_ANALYZER
+}
+
+/// Missing row = running. History lives in the audit log.
+model KillSwitch {
+  key         KillSwitchKey @id
+  paused      Boolean       @default(false)
+  reason      String?
+  updatedById String?
+  updatedAt   DateTime      @updatedAt
+  updatedBy   User?         @relation(fields: [updatedById], references: [id])
+}
+
+enum FeedbackCategory {
+  BUG
+  IDEA
+  TRUST_SAFETY
+  OTHER
+}
+
+enum FeedbackStatus {
+  OPEN
+  ACKNOWLEDGED
+  CLOSED
+}
+
+model Feedback {
+  id          String           @id @default(cuid())
+  userId      String
+  category    FeedbackCategory
+  message     String
+  pagePath    String?
+  status      FeedbackStatus   @default(OPEN)
+  staffNotes  String?
+  handledById String?
+  handledAt   DateTime?
+  createdAt   DateTime         @default(now())
+  user        User             @relation("FeedbackAuthor", fields: [userId], references: [id])
+  handledBy   User?            @relation("FeedbackHandler", fields: [handledById], references: [id])
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+/// One staff sign-off per UTC day on the trust-and-safety queues.
+model DailyReview {
+  id                String   @id @default(cuid())
+  day               DateTime @unique @db.Date
+  reviewedById      String
+  notes             String?
+  openSignals       Int
+  pendingCompliance Int
+  openFeedback      Int
+  createdAt         DateTime @default(now())
+  reviewedBy        User     @relation(fields: [reviewedById], references: [id])
+}
+
+/// Marks the staff digest email as sent for a UTC day (the unique day stops duplicates).
+model DailyDigest {
+  day        DateTime @id @db.Date
+  recipients Int
+  sentAt     DateTime @default(now())
+}
+
+enum AppealStatus {
+  OPEN
+  UPHELD
+  OVERTURNED
+}
+
+/// A member's in-app appeal of one enforcement action (suspended and banned members can't
+/// sign in, so they appeal by replying to the notice email). One appeal per action.
+model Appeal {
+  id                  String            @id @default(cuid())
+  enforcementActionId String            @unique
+  userId              String
+  message             String
+  status              AppealStatus      @default(OPEN)
+  decidedById         String?
+  decidedAt           DateTime?
+  decisionNotes       String?
+  createdAt           DateTime          @default(now())
+  enforcementAction   EnforcementAction @relation(fields: [enforcementActionId], references: [id])
+  user                User              @relation("AppealAuthor", fields: [userId], references: [id])
+  decidedBy           User?             @relation("AppealDecider", fields: [decidedById], references: [id])
+
+  @@index([status, createdAt])
+}
