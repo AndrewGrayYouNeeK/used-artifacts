@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { platform } from "@/config/platform";
+import Image from "next/image";
 import Link from "next/link";
 import { ListingCard } from "@/components/listing-card";
 import { browseListings } from "@/domains/listings/browse";
@@ -8,19 +9,30 @@ import { db } from "@/lib/db";
 
 export default function Home() {
   return (
-    <div className="mx-auto max-w-5xl px-6 py-16">
-      <section className="max-w-2xl">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-amber-800">
-          Closed beta
-        </p>
-        <h1 className="font-serif text-5xl font-semibold leading-tight tracking-tight">
-          Artifacts with a paper trail.
-        </h1>
-        <p className="mt-5 text-lg text-stone-600">
-          Every seller is ID-verified and signs a provenance statement for every piece. Payment is
-          held until you confirm delivery. High-value pieces are checked by independent
-          authenticators.
-        </p>
+    <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6 sm:py-16">
+      <section className="flex flex-col items-center gap-8 text-center md:flex-row-reverse md:items-center md:justify-between md:gap-12 md:text-left">
+        <Image
+          src="/logo.webp"
+          alt="Used Artifacts logo"
+          width={640}
+          height={640}
+          priority
+          sizes="(min-width: 768px) 320px, 224px"
+          className="h-56 w-56 shrink-0 drop-shadow-xl md:h-80 md:w-80"
+        />
+        <div className="max-w-2xl">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-amber-800">
+            Closed beta
+          </p>
+          <h1 className="font-serif text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
+            Artifacts with a paper trail.
+          </h1>
+          <p className="mt-5 text-base text-stone-600 sm:text-lg">
+            Every seller is ID-verified and signs a provenance statement for every piece. Payment is
+            held until you confirm delivery. High-value pieces are checked by independent
+            authenticators.
+          </p>
+        </div>
       </section>
 
       <section className="mt-16">

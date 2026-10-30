@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { Suspense } from "react";
 import { logoutAction } from "@/app/actions/auth";
@@ -8,7 +9,8 @@ export function SiteHeader() {
   return (
     <header className="relative z-40 border-b border-stone-200 bg-white/70 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3 sm:px-6 sm:py-4">
-        <Link href="/" className="shrink-0 font-serif text-xl font-semibold tracking-tight">
+        <Link href="/" className="flex shrink-0 items-center gap-2.5 font-serif text-lg font-semibold tracking-tight sm:text-xl">
+          <Image src="/logo.webp" alt="" width={40} height={40} priority className="h-9 w-9 sm:h-10 sm:w-10" />
           Used Artifacts
         </Link>
         <Suspense fallback={<span className="h-5 w-24 animate-pulse rounded bg-stone-200" />}>
