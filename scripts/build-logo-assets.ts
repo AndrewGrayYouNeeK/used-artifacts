@@ -7,15 +7,42 @@ if (!source) {
   process.exit(1);
 }
 
-/** The badge sits on a white field; trim it and mask to a circle so the corners are transparent. */
+/** Lightest channel at or above the floor counts as background, fading to fully clear at the ceiling (JPEG white is ~252, not 255). */
+const BACKGROUND_FLOOR = 200;
+const BACKGROUND_CEILING = 245;
+
+/**
+ * The badge sits on a white field and its banner sticks out past the round frame, so a circular
+ * mask would clip it. Instead, flood-fill the light background inward from the image border and
+ * make it transparent, fading partially-light edge pixels to keep the antialiasing.
+ */
 async function badge(size: number): Promise<Buffer> {
-  const trimmed = await sharp(await readFile(source))
+  const { data, info } = await sharp(await readFile(source))
     .trim({ background: "#ffffff", threshold: 20 })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width, height } = info;
+  const lightness = (p: number) => Math.min(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]);
+  const seen = new Uint8Array(width * height);
+  const stack: number[] = [];
+  for (let x = 0; x < width; x++) stack.push(x, (height - 1) * width + x);
+  for (let y = 0; y < height; y++) stack.push(y * width, y * width + width - 1);
+  while (stack.length) {
+    const p = stack.pop()!;
+    if (seen[p] || lightness(p) < BACKGROUND_FLOOR) continue;
+    seen[p] = 1;
+    data[p * 4 + 3] = Math.round((Math.max(0, BACKGROUND_CEILING - lightness(p)) / (BACKGROUND_CEILING - BACKGROUND_FLOOR)) * 255);
+    const x = p % width;
+    if (x > 0) stack.push(p - 1);
+    if (x < width - 1) stack.push(p + 1);
+    if (p >= width) stack.push(p - width);
+    if (p < width * (height - 1)) stack.push(p + width);
+  }
+  return sharp(data, { raw: { width, height, channels: 4 } })
     .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png()
+    .png({ compressionLevel: 9 })
     .toBuffer();
-  const mask = Buffer.from(`<svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${size / 2}" fill="#fff"/></svg>`);
-  return sharp(trimmed).ensureAlpha().composite([{ input: mask, blend: "dest-in" }]).png().toBuffer();
 }
 
 /** ICO with embedded PNG images (supported by every current browser). */
@@ -41,7 +68,7 @@ function ico(pngs: { size: number; data: Buffer }[]): Buffer {
 async function main() {
   const full = await badge(1024);
   await writeFile("public/logo.png", full);
-  await writeFile("public/logo.webp", await sharp(full).resize(640).webp({ quality: 80 }).toBuffer());
+  await writeFile("public/logo.webp", await sharp(full).resize(640).webp({ quality: 78, alphaQuality: 80, effort: 6 }).toBuffer());
 
   await writeFile("src/app/icon.png", await sharp(full).resize(192).png({ compressionLevel: 9 }).toBuffer());
   // iOS fills transparency with black, so the touch icon gets the site's paper background.
